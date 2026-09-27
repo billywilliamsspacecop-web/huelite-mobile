@@ -1,0 +1,9 @@
+{
+  "appId": "com.bryce.huelite",
+  "appName": "HueLite",
+  "webDir": "dist",
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#111110"
+  }
+}

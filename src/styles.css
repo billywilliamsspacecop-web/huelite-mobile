@@ -1,0 +1,189 @@
+/* HueLite Mobile, matched to the desktop restyle: blueprint grid ground,
+   one colour theme per stage, monospace everything, square corners,
+   [ BRACKETED ] section heads with dotted leaders, corner-mark frames. */
+
+:root {
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --grid-size: 16px;
+
+  /* Exact values from the desktop's core/theme.py. The ground (bg/well/
+     panel/line/text/muted) never changes between stages there — only the
+     accent, fill and text-on-accent do — so this app matches that: the
+     grid stays a faint neutral wash and only --accent/--fill/--on-accent
+     are overridden per stage below. */
+  --bg: #111110;      /* INK */
+  --well: #191917;    /* SURFACE */
+  --panel: #21211e;   /* RAISED */
+  --line: #2b2b27;    /* LINE */
+  --grid: rgba(255, 255, 255, .035);
+  --text: #e6e6dc;    /* BONE */
+  --muted: #8f8f81;   /* MUTED */
+  --dim: #5a5a52;     /* DIM */
+}
+
+/* Prep: accent SAGE, fill MOSS. */
+#app[data-stage="prep"] {
+  --accent: #8fc796; --fill: #3f9a62; --on-accent: #111110;
+}
+/* Solve: accent SKY, fill NAVY. */
+#app[data-stage="solve"] {
+  --accent: #7a9ed0; --fill: #243b60; --on-accent: #e6e6dc;
+}
+/* Export: accent CREAM, fill a muted bronze, EMBER for warnings. */
+#app[data-stage="export"] {
+  --accent: #dacfb4; --fill: #8a6a3e; --on-accent: #111110;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; border-radius: 0; }
+html, body { margin: 0; height: 100%; background: #111; overscroll-behavior: none; }
+body { -webkit-user-select: none; user-select: none; font-family: var(--mono); font-size: 14px; }
+
+#app {
+  height: 100%; display: flex; flex-direction: column; color: var(--text);
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: var(--grid-size) var(--grid-size);
+  transition: background-color .25s;
+}
+
+/* ---- header: "02 SOLVE" / project · subtitle ---- */
+.top { padding: calc(var(--safe-top) + 14px) 16px 12px; }
+.top-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.stage-title { margin: 0; font: 800 26px/1 var(--mono); letter-spacing: .04em;
+  text-transform: uppercase; }
+.top-sub { margin-top: 6px; font-size: 12px; color: var(--text); opacity: .85;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.top-sub .proj { text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
+.top-sub .dotsep { color: var(--muted); margin: 0 8px; }
+.brand { font-size: 11px; color: var(--muted); letter-spacing: .1em; text-transform: uppercase; }
+
+/* ---- body ---- */
+.screen { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 4px 16px 24px; }
+
+.section-head { display: flex; align-items: center; gap: 8px; margin: 22px 0 10px;
+  font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--text); white-space: nowrap; }
+.section-head::after { content: ""; flex: 1; border-bottom: 1px dotted var(--muted);
+  opacity: .6; transform: translateY(2px); }
+.section-head:first-child { margin-top: 8px; }
+
+.meta { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.note { color: var(--text); opacity: .85; font-size: 12px; line-height: 1.5; }
+
+/* key / value readout, like the Solve rail's "total / base / edge ..." block */
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px;
+  font-size: 12px; margin-top: 10px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; color: var(--text); }
+
+/* ---- corner-mark frame (the desktop's view panels) ---- */
+.frame { position: relative; padding: 10px; }
+.frame > i { position: absolute; width: 10px; height: 10px; border: 0 solid var(--muted);
+  opacity: .8; pointer-events: none; }
+.frame > i:nth-of-type(1) { left: 0; top: 0; border-left-width: 1.5px; border-top-width: 1.5px; }
+.frame > i:nth-of-type(2) { right: 0; top: 0; border-right-width: 1.5px; border-top-width: 1.5px; }
+.frame > i:nth-of-type(3) { left: 0; bottom: 0; border-left-width: 1.5px; border-bottom-width: 1.5px; }
+.frame > i:nth-of-type(4) { right: 0; bottom: 0; border-right-width: 1.5px; border-bottom-width: 1.5px; }
+.frame-caption { text-align: center; font-size: 11px; letter-spacing: .1em;
+  text-transform: uppercase; margin-bottom: 6px; }
+
+/* ---- pick state ---- */
+.pick { display: flex; flex-direction: column; gap: 14px; margin-top: 8px; }
+.drop { width: 100%; aspect-ratio: 1; max-height: 52vh; background: var(--well);
+  border: 1px dashed var(--line); display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px; color: var(--muted);
+  font: inherit; font-size: 12px; }
+.drop b { color: var(--text); font-size: 15px; letter-spacing: .08em; text-transform: uppercase; }
+
+/* ---- controls ---- */
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+.btn { background: var(--well); border: 1px solid var(--line); padding: 10px 12px;
+  min-height: 44px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
+.btn:active { filter: brightness(1.2); }
+.btn.primary { white-space: pre; background: linear-gradient(180deg, var(--accent), var(--fill));
+  color: var(--on-accent); border-color: var(--accent); font-weight: 800; letter-spacing: .14em; }
+.btn.ghost { background: transparent; border-style: dashed; color: var(--dim); }
+.btn.ghost:active { color: var(--text); border-color: var(--accent); border-style: solid; }
+.btn[disabled] { opacity: .45; }
+
+/* tab / chip: "simulated print", "A1", "standard" */
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { background: var(--well); border: 1px solid var(--line); padding: 7px 12px;
+  min-height: 34px; font-size: 12px; color: var(--text); }
+.chip.on { background: var(--fill); border-color: var(--accent); color: var(--text);
+  font-weight: 700; }
+.row { display: flex; gap: 6px; align-items: stretch; }
+.row > .grow { flex: 1; }
+
+/* rail field: sans label left, dark value box right */
+label.field { display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 6px 0; font: 600 13px var(--sans); color: var(--text); }
+.val { width: 108px; text-align: left; background: var(--well); color: var(--text);
+  border: 1px solid var(--line); padding: 7px 10px; font: 700 13px var(--mono);
+  -webkit-user-select: text; user-select: text; -webkit-appearance: none; appearance: none; }
+.val:focus { outline: none; border-color: var(--accent); }
+
+/* ---- crop ---- */
+.crop-wrap { position: relative; width: 100%; background: var(--well); overflow: hidden;
+  touch-action: none; padding: 18px; display: flex; justify-content: center; }
+.crop-stage { position: relative; }
+.crop-stage canvas { display: block; }
+.crop-box { position: absolute; border: 1.5px solid var(--accent);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, .6); touch-action: none; }
+.crop-box::before, .crop-box::after { content: ""; position: absolute; inset: 0; pointer-events: none; }
+.crop-box::before { border-left: 1px dotted rgba(255,255,255,.35);
+  border-right: 1px dotted rgba(255,255,255,.35); left: 33.33%; right: 33.33%; }
+.crop-box::after { border-top: 1px dotted rgba(255,255,255,.35);
+  border-bottom: 1px dotted rgba(255,255,255,.35); top: 33.33%; bottom: 33.33%; }
+.handle { position: absolute; width: 36px; height: 36px; touch-action: none; }
+.handle::after { content: ""; position: absolute; width: 12px; height: 12px;
+  background: var(--accent); left: 12px; top: 12px; }
+.handle.nw { left: -18px; top: -18px; }
+.handle.ne { right: -18px; top: -18px; }
+.handle.sw { left: -18px; bottom: -18px; }
+.handle.se { right: -18px; bottom: -18px; }
+
+.preview-out { width: 100%; display: block; background: var(--well); }
+
+/* ---- filament table (Solve rail) ---- */
+.fil-table { display: grid; grid-template-columns: 16px 48px 1fr 1fr; gap: 6px 8px;
+  align-items: center; }
+.fil-table .th { font-size: 11px; color: var(--muted); }
+.fil-table .idx { font-size: 12px; color: var(--muted); text-align: right; }
+.fil-table .sw { width: 30px; height: 30px; border: 1px solid var(--line); }
+.fil-table .val { width: 100%; }
+
+/* ---- placeholders ---- */
+.todo { border: 1px dashed var(--line); background: color-mix(in srgb, var(--well) 70%, transparent);
+  padding: 12px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.todo b { color: var(--text); display: block; margin-bottom: 4px; letter-spacing: .06em;
+  text-transform: uppercase; font-size: 12px; }
+
+/* ---- action bar ---- */
+.action { padding: 10px 16px; display: flex; flex-direction: column; gap: 6px;
+  border-top: 1px dotted var(--line); }
+.action .btn { width: 100%; }
+
+/* ---- stepper: 01 PREP / 02 SOLVE / 03 EXPORT tabs ---- */
+.stepper { display: flex; gap: 6px; padding: 8px 16px calc(var(--safe-bottom) + 10px);
+  background: var(--well); border-top: 1px solid var(--line); }
+.step { flex: 1; min-height: 44px; border: 1px solid var(--line); background: var(--bg);
+  font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+  display: flex; align-items: center; justify-content: center; gap: 6px; }
+.step .num { font-weight: 800; }
+.step.done { color: var(--text); }
+.step.done .num::after { content: " ✓"; }
+.step.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent);
+  font-weight: 800; }
+.step.locked { opacity: .35; }
+
+.toast { position: fixed; left: 50%; bottom: calc(var(--safe-bottom) + 150px);
+  transform: translateX(-50%); background: #0b0b0b; border: 1px solid #333; color: #eee;
+  padding: 9px 14px; font: 12px var(--mono); letter-spacing: .04em; opacity: 0;
+  transition: opacity .2s; pointer-events: none; white-space: nowrap; }
+.toast.show { opacity: 1; }
