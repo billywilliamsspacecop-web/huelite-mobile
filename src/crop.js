@@ -54,6 +54,12 @@ export function createCropper(container, bitmap, { rotateDeg = 0, flipH = false,
   const canvas = document.createElement("canvas");
   const box = document.createElement("div");
   box.className = "crop-box";
+  // Shape preview: whatever won't print is checkered out, inside the crop.
+  const overlay = document.createElement("canvas");
+  overlay.className = "crop-overlay";
+  box.appendChild(overlay);
+  let painter = null;
+  let paintTimer = 0;
   for (const k of ["nw", "ne", "sw", "se"]) {
     const hnd = document.createElement("div");
     hnd.className = `handle ${k}`;
@@ -82,6 +88,7 @@ export function createCropper(container, bitmap, { rotateDeg = 0, flipH = false,
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(oriented, 0, 0, canvas.width, canvas.height);
     place();
+    repaint();
   }
 
   function place() {
@@ -101,9 +108,22 @@ export function createCropper(container, bitmap, { rotateDeg = 0, flipH = false,
     return r;
   }
 
+  function repaint() {
+    clearTimeout(paintTimer);
+    paintTimer = setTimeout(() => {
+      const img = painter ? painter(oriented, api.getCrop()) : null;
+      overlay.hidden = !img;
+      if (!img) return;
+      overlay.width = img.width;
+      overlay.height = img.height;
+      overlay.getContext("2d").drawImage(img, 0, 0);
+    }, 60);
+  }
+
   function changed() {
     place();
     onChange(api.getCrop());
+    repaint();
   }
 
   // ---- gestures ----
@@ -182,6 +202,10 @@ export function createCropper(container, bitmap, { rotateDeg = 0, flipH = false,
       rect = fitRect(oriented.width, oriented.height, aspect);
       changed();
     },
+    /** painter(orientedCanvas, [x, y, w, h]) -> canvas to stretch over the
+     *  crop box, or null for no overlay. */
+    setOverlay(fn) { painter = fn; repaint(); },
+    refreshOverlay() { repaint(); },
     getCrop() {
       return [rect.x, rect.y, rect.w, rect.h].map(Math.round);
     },
@@ -197,7 +221,7 @@ export function createCropper(container, bitmap, { rotateDeg = 0, flipH = false,
       ctx.drawImage(oriented, x, y, w, h, 0, 0, out.width, out.height);
       return out;
     },
-    destroy() { ro.disconnect(); container.innerHTML = ""; },
+    destroy() { clearTimeout(paintTimer); ro.disconnect(); container.innerHTML = ""; },
   };
   draw();
   return api;

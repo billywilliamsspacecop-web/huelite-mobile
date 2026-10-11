@@ -1,10 +1,20 @@
-import { app, canOpen, COMPLETE, defaultData, MOBILE_OUTPUT_PX, setStatus,
-         STAGE_LABELS, STAGE_REQUIRES, STAGES } from "./state.js";
+import { app, canOpen, COMPLETE, DEFAULT_FILAMENTS, defaultData, MOBILE_OUTPUT_PX, PENDING,
+         setStatus, STAGE_LABELS, STAGE_REQUIRES, STAGES } from "./state.js";
 import { ASPECTS, createCropper, loadPhoto } from "./crop.js";
+import * as shape from "./engine/shape.js";
+import * as solve from "./engine/solve.js";
+import * as mesh from "./engine/mesh.js";
+import * as bambu3mf from "./engine/bambu3mf.js";
 
 const root = document.getElementById("app");
+const SOLVE_PROXY = 360;      // live solve resolution (long edge)
+const PREP_OVERLAY_PX = 320;  // shape preview resolution (long edge)
 let cropper = null;
 let aspectKey = "free";
+let solveView = "sim";
+let solveTimer = 0;
+let exportOpts = { detail: "standard", plate: "A1", formats: { "3mf": true, stl: false } };
+let lastFiles = [];           // [{ name, url }] from the last export
 
 // ---------------------------------------------------------------- helpers
 const h = (tag, attrs = {}, ...kids) => {
@@ -15,7 +25,7 @@ const h = (tag, attrs = {}, ...kids) => {
     else if (v === true) el.setAttribute(k, "");
     else if (v !== false && v != null) el.setAttribute(k, v);
   }
-  for (const kid of kids.flat()) if (kid != null) el.append(kid);
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid);
   return el;
 };
 const head = (text) => h("div", { class: "section-head" }, `[ ${text} ]`);
@@ -25,21 +35,86 @@ const frame = (caption, ...kids) => h("div", { class: "frame" },
   caption ? h("div", { class: "frame-caption" }, caption) : null, ...kids);
 const kv = (pairs) => h("dl", { class: "kv" },
   pairs.flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]));
+const pane = (cls, ...kids) => h("div", { class: `pane ${cls}` }, ...kids);
+const nextFrame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+
+function canvasOf(imageData) {
+  const c = document.createElement("canvas");
+  c.width = imageData.width;
+  c.height = imageData.height;
+  c.getContext("2d").putImageData(imageData, 0, 0);
+  return c;
+}
+
+/** Chip row where exactly one is on. */
+function chipGroup(options, current, onPick) {
+  const row = h("div", { class: "chips" });
+  for (const o of options) {
+    const b = h("button", { class: `chip${o.key === current ? " on" : ""}`,
+      disabled: o.disabled || false, title: o.tip || null, onclick: () => {
+        row.querySelectorAll(".chip").forEach((c) => c.classList.remove("on"));
+        b.classList.add("on");
+        onPick(o.key);
+      } }, o.label);
+    row.append(b);
+  }
+  return row;
+}
+
+function numField(labelText, value, { step, min, max, fmt = (v) => String(v), onchange }) {
+  return h("label", { class: "field" }, labelText,
+    h("input", { class: "val", type: "number", inputmode: "decimal", step, min, max,
+      value: fmt(value), onchange: (e) => {
+        const v = Math.min(max, Math.max(min, parseFloat(e.target.value)));
+        const ok = Number.isFinite(v) ? v : value;
+        e.target.value = fmt(ok);
+        onchange(ok);
+      } }));
+}
+
+function rangeField(labelText, value, { min, max, step = 1, fmt, oninput }) {
+  const out = h("span", { class: "range-val" }, fmt(value));
+  return h("label", { class: "range" },
+    h("span", { class: "range-head" }, h("span", {}, labelText), out),
+    h("input", { type: "range", min, max, step, value: String(value), oninput: (e) => {
+      const v = parseFloat(e.target.value);
+      out.textContent = fmt(v);
+      oninput(v);
+    } }));
+}
 
 const STAGE_SUB = {
-  prep: "crop, orient, size and simplify the source",
+  prep: "crop, orient, size and shape the source",
   solve: "filament stack and depth",
   export: "mesh, package, and send to the printer",
 };
 
 let toastTimer;
-function toast(msg) {
+function toast(msg, ms = 1800) {
   let t = document.querySelector(".toast");
   if (!t) { t = h("div", { class: "toast" }); document.body.append(t); }
   t.textContent = msg;
   t.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove("show"), 1800);
+  toastTimer = setTimeout(() => t.classList.remove("show"), ms);
+}
+
+/** Run something heavy with a "working" veil, after the veil has painted. */
+async function busy(label, fn) {
+  const veil = h("div", { class: "veil" }, h("div", {}, label));
+  document.body.append(veil);
+  await nextFrame();
+  try { return await fn(); } finally { veil.remove(); }
+}
+
+async function sourceHasAlpha(bmp) {
+  const k = Math.min(1, 256 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(bmp.width * k));
+  c.height = Math.max(1, Math.round(bmp.height * k));
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(bmp, 0, 0, c.width, c.height);
+  return shape.hasAlpha(ctx.getImageData(0, 0, c.width, c.height).data);
 }
 
 const picker = h("input", { type: "file", accept: "image/*", hidden: true,
@@ -51,10 +126,14 @@ const picker = h("input", { type: "file", accept: "image/*", hidden: true,
       const bmp = await loadPhoto(file);
       app.sourceBitmap?.close?.();
       app.sourceBitmap = bmp;
+      app.sourceHasAlpha = await sourceHasAlpha(bmp);
       const name = (file.name || "photo").replace(/\.[^.]+$/, "");
       app.project = defaultData(name);
       app.project.source = { filename: file.name, width_px: bmp.width, height_px: bmp.height };
-      app.preppedCanvas = null;
+      // a transparent PNG almost always means "cut it out"
+      if (app.sourceHasAlpha) app.project.prep.shape.mode = "alpha";
+      app.prepped = app.proxy = app.solved = null;
+      lastFiles = [];
       aspectKey = "free";
       go("prep");
     } catch (err) {
@@ -105,6 +184,10 @@ function renderStepper() {
   }));
 }
 
+function refreshStepper() {
+  root.querySelector(".stepper")?.replaceWith(renderStepper());
+}
+
 function go(stage) {
   app.stage = stage;
   render();
@@ -123,17 +206,21 @@ function renderPrep(screen, action) {
     screen.append(h("div", { class: "pick" },
       frame(null, h("button", { class: "drop", onclick: () => picker.click() },
         h("b", {}, "+ choose a photo"),
-        h("span", {}, "library or camera"))),
+        h("span", {}, "library or camera · PNG cut-outs keep their shape"))),
       h("p", { class: "meta" },
         "turns it into a layered, multi-filament print for the A1.")));
     return;
   }
 
   const p = app.project.prep;
-  screen.append(head("crop"));
+  p.shape = { ...shape.DEFAULT_SHAPE, ...(p.shape || {}) };
+  const invalidate = () => {
+    if (app.project.status.prep === COMPLETE) { setStatus("prep", PENDING); refreshStepper(); }
+  };
+
   const cropHost = h("div");
-  screen.append(frame(null, cropHost));
   const readout = h("div");
+  const shapeNote = h("p", { class: "meta shape-note" }, "");
   const updateReadout = (crop) => {
     const [, , w, hgt] = crop;
     const k = Math.min(1, MOBILE_OUTPUT_PX / Math.max(w, hgt));
@@ -145,6 +232,34 @@ function renderPrep(screen, action) {
     ]));
   };
 
+  // live shape preview, painted over the crop box by the cropper
+  const painter = (oriented, [x, y, w, hgt]) => {
+    if (p.shape.mode === "rect") { shapeNote.textContent = "prints the whole crop"; return null; }
+    const k = Math.min(1, PREP_OVERLAY_PX / Math.max(w, hgt));
+    const cw = Math.max(1, Math.round(w * k)), ch = Math.max(1, Math.round(hgt * k));
+    const c = document.createElement("canvas");
+    c.width = cw; c.height = ch;
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(oriented, x, y, w, hgt, 0, 0, cw, ch);
+    const id = ctx.getImageData(0, 0, cw, ch);
+    const m = shape.build(p.shape.mode, id, { tolerance: p.shape.tolerance,
+      pxPerMm: cw / p.physical_width_mm, minFeatureMm: p.shape.min_feature_mm });
+    shapeNote.textContent = shapeVerdict(p.shape.mode, m);
+    if (!m) return null;
+    const out = new ImageData(cw, ch);
+    const cell = Math.max(3, Math.round(cw / 40));
+    for (let yy = 0; yy < ch; yy++) {
+      for (let xx = 0; xx < cw; xx++) {
+        const i = yy * cw + xx;
+        if (m[i]) continue;
+        const on = ((Math.floor(xx / cell) + Math.floor(yy / cell)) & 1) === 1;
+        const v = on ? 44 : 28;
+        out.data.set([v, v, v - 3, 240], i * 4);
+      }
+    }
+    return canvasOf(out);
+  };
+
   // mount after it's in the DOM so it can measure its width
   let ready = false; // don't treat the initial layout as a user edit
   requestAnimationFrame(() => {
@@ -153,54 +268,79 @@ function renderPrep(screen, action) {
       onChange: (crop) => {
         p.crop = crop;
         updateReadout(crop);
-        if (ready && app.project.status.prep === COMPLETE) { setStatus("prep", "pending"); refreshStepper(); }
+        if (ready) invalidate();
       },
     });
     const a = ASPECTS.find((x) => x.key === aspectKey);
     if (a?.ratio) cropper.setAspect(a.ratio);
+    cropper.setOverlay(painter);
     p.crop = cropper.getCrop();
     updateReadout(p.crop);
     ready = true;
   });
 
-  const aspectChips = h("div", { class: "chips" }, ASPECTS.map((a) =>
-    h("button", { class: `chip${a.key === aspectKey ? " on" : ""}`, onclick: (e) => {
-      aspectKey = a.key;
-      aspectChips.querySelectorAll(".chip").forEach((c) => c.classList.remove("on"));
-      e.currentTarget.classList.add("on");
-      cropper?.setAspect(a.ratio);
-    } }, a.label)));
+  const aspectChips = () => chipGroup(ASPECTS.map((a) => ({ key: a.key, label: a.label })), aspectKey,
+    (key) => { aspectKey = key; cropper?.setAspect(ASPECTS.find((a) => a.key === key).ratio); });
+  let aspectRow = aspectChips();
+
+  const tolerance = rangeField("background tolerance", Math.round(p.shape.tolerance * 100), {
+    min: 0, max: 100, fmt: (v) => `${v}%`,
+    oninput: (v) => { p.shape.tolerance = v / 100; invalidate(); cropper?.refreshOverlay(); } });
+  tolerance.hidden = p.shape.mode !== "knockout";
+
+  const shapeChips = chipGroup([
+    { key: "rect", label: "rectangle", tip: "The whole crop prints, edge to edge." },
+    { key: "ellipse", label: "circle / oval", tip: "A circle or oval filling the crop. 1:1 for a true circle." },
+    { key: "alpha", label: "cut-out", disabled: !app.sourceHasAlpha,
+      tip: app.sourceHasAlpha ? "Cut to the image's own transparency."
+                              : "Needs a PNG with a transparent background." },
+    { key: "knockout", label: "knock out bg", tip: "Remove a plain background around the subject." },
+  ], p.shape.mode, (key) => {
+    p.shape.mode = key;
+    tolerance.hidden = key !== "knockout";
+    if (key === "ellipse" && aspectKey === "free") {
+      aspectKey = "1:1";
+      cropper?.setAspect(1);
+      const fresh = aspectChips();
+      aspectRow.replaceWith(fresh);
+      aspectRow = fresh;
+    }
+    invalidate();
+    cropper?.refreshOverlay();
+  });
 
   screen.append(
-    h("div", { class: "row", style: "margin-top:12px" },
-      h("button", { class: "btn grow", onclick: () => {
-        p.rotate_deg = (p.rotate_deg + 270) % 360; // counter-clockwise
-        cropper?.setOrientation(p.rotate_deg, p.flip_h);
-      } }, "↺ rotate"),
-      h("button", { class: "btn grow", onclick: () => {
-        p.flip_h = !p.flip_h;
-        cropper?.setOrientation(p.rotate_deg, p.flip_h);
-      } }, "⇋ flip"),
-      h("button", { class: "btn grow", onclick: () => cropper?.reset() }, "reset")),
-    h("div", { style: "margin-top:12px" }, aspectChips),
-    readout,
+    pane("view", head("crop"), frame(null, cropHost),
+      h("div", { class: "row", style: "margin-top:12px" },
+        h("button", { class: "btn grow", onclick: () => {
+          p.rotate_deg = (p.rotate_deg + 270) % 360; // counter-clockwise
+          cropper?.setOrientation(p.rotate_deg, p.flip_h);
+        } }, "↺ rotate"),
+        h("button", { class: "btn grow", onclick: () => {
+          p.flip_h = !p.flip_h;
+          cropper?.setOrientation(p.rotate_deg, p.flip_h);
+        } }, "⇋ flip"),
+        h("button", { class: "btn grow", onclick: () => cropper?.reset() }, "reset")),
+      h("div", { style: "margin-top:12px" }, aspectRow),
+      readout),
+    pane("ctrl",
+      head("shape"),
+      shapeChips,
+      h("div", { style: "margin-top:10px" }, tolerance),
+      shapeNote,
+      !app.sourceHasAlpha && h("p", { class: "meta" },
+        "tip: a PNG with a transparent background prints as exactly that outline."),
 
-    head("print size"),
-    h("label", { class: "field" }, "width (mm)",
-      h("input", { class: "val", type: "number", inputmode: "decimal", min: "20", max: "256", step: "1",
-        value: String(p.physical_width_mm), onchange: (e) => {
-          const v = Math.min(256, Math.max(20, parseFloat(e.target.value) || 120));
-          p.physical_width_mm = v;
-          e.target.value = String(v);
-          updateReadout(p.crop);
-        } })),
-    h("p", { class: "meta" }, "A1 bed is 256 mm · A1 mini is 180 mm"),
+      head("print size"),
+      numField("width (mm)", p.physical_width_mm, { step: "1", min: 20, max: 256,
+        onchange: (v) => { p.physical_width_mm = v; updateReadout(p.crop); invalidate(); cropper?.refreshOverlay(); } }),
+      h("p", { class: "meta" }, "A1 bed is 256 mm · A1 mini is 180 mm"),
 
-    head("adjustments"),
-    h("div", { class: "todo" },
-      h("b", {}, "brightness · contrast · saturation · denoise · sharpen"),
-      "These come across with the engine port so they match the desktop exactly, " +
-      "instead of looking similar and solving differently."),
+      head("adjustments"),
+      h("div", { class: "todo" },
+        h("b", {}, "brightness · contrast · saturation · denoise · sharpen"),
+        "Not on the phone yet - prep those on the Mac if a photo needs them. " +
+        "Crop, shape and size all carry through to the print.")),
   );
 
   action.append(
@@ -209,88 +349,411 @@ function renderPrep(screen, action) {
   );
 }
 
-function refreshStepper() {
-  root.querySelector(".stepper")?.replaceWith(renderStepper());
+function shapeVerdict(mode, m) {
+  if (!m) return "prints the whole crop";
+  const cover = shape.coverage(m);
+  if (cover < 0.01) return "nothing left to print - lower the tolerance";
+  if (mode === "knockout" && cover > 0.985) return "no background found - raise the tolerance, or crop tighter";
+  return `prints ${(cover * 100).toFixed(0)}% of the crop · checkered = no plate`;
 }
 
-function commitPrep() {
+async function commitPrep() {
   if (!cropper) return;
-  app.preppedCanvas = cropper.output(MOBILE_OUTPUT_PX);
-  app.project.prep.output_px = [app.preppedCanvas.width, app.preppedCanvas.height];
-  setStatus("prep", COMPLETE);
-  go("solve");
+  const p = app.project.prep;
+  await busy("prepping…", async () => {
+    const out = cropper.output(MOBILE_OUTPUT_PX);  // keeps transparency if the source had it
+    const w = out.width, hh = out.height;
+    const ctx = out.getContext("2d", { willReadFrequently: true });
+    const data = ctx.getImageData(0, 0, w, hh);
+    const mask = shape.build(p.shape.mode, data, { tolerance: p.shape.tolerance,
+      pxPerMm: w / p.physical_width_mm, minFeatureMm: p.shape.min_feature_mm });
+    if (mask && shape.coverage(mask) < 0.01) {
+      toast("The shape left nothing to print", 2600);
+      return;
+    }
+    shape.flatten(data);
+    ctx.putImageData(data, 0, 0);
+    app.prepped = { canvas: out, data, mask, w, h: hh };
+
+    const k = Math.min(1, SOLVE_PROXY / Math.max(w, hh));
+    const pw = Math.max(1, Math.round(w * k)), ph = Math.max(1, Math.round(hh * k));
+    const pc = document.createElement("canvas");
+    pc.width = pw; pc.height = ph;
+    const pctx = pc.getContext("2d", { willReadFrequently: true });
+    pctx.imageSmoothingQuality = "high";
+    pctx.drawImage(out, 0, 0, pw, ph);
+    app.proxy = { data: pctx.getImageData(0, 0, pw, ph), mask: shape.resize(mask, w, hh, pw, ph), w: pw, h: ph };
+    app.solved = null;
+    p.output_px = [w, hh];
+    setStatus("prep", COMPLETE);
+    go("solve");
+  });
 }
 
 // ---------------------------------------------------------------- solve
-function renderSolve(screen, action) {
+function solveSettings() {
   const s = app.project.solve;
-  const tabs = h("div", { class: "chips" },
-    ["simulated print", "side", "~30° angle", "height", "source"].map((t) =>
-      h("button", { class: `chip${t === "source" ? " on" : ""}`, onclick: () =>
-        t === "source" ? null : toast("previews arrive with the engine port") }, t)));
-  screen.append(h("div", { style: "margin-top:8px" }, tabs));
-  if (app.preppedCanvas) {
-    const img = h("img", { class: "preview-out", alt: "prepped" });
-    img.src = app.preppedCanvas.toDataURL("image/jpeg", 0.9);
-    screen.append(h("div", { style: "margin-top:10px" }, frame(null, img)));
+  const lh = s.layer_height_mm;
+  return {
+    s, lh,
+    baseLayers: Math.max(2, s.base_layers | 0),
+    mode: s.band_mode || "solid",
+    mm: app.project.prep.physical_width_mm,
+  };
+}
+
+/** heights for one image at its own resolution, the same steps as the
+ *  desktop's SolveWindow.recompute / _save */
+function solveImage({ data, mask, w, h }) {
+  const { s, lh, mode, mm } = solveSettings();
+  const { lut } = solve.buildLut(s.filaments, lh, mode);
+  let heights = solve.solveHeights(data.data, w, h, lut,
+    { dither: s.dither !== "none", amount: s.dither_amount ?? 1 });
+  heights = solve.applyMask(heights, mask);
+  heights = solve.applySlope(heights, w, h, mm / Math.max(1, w), s.slope_mm_per_layer ?? 0);
+  const border = s.border || {};
+  if ((border.mode || "raised") !== "none") {
+    heights = solve.applyBorder(heights, w, h, {
+      widthPx: Math.round((border.width_mm ?? 3) * w / Math.max(1e-6, mm)),
+      mode: border.mode || "raised",
+      rimLayers: solve.bandEndLayer(s.filaments, border.frame_slot ?? 1),
+      maxLayers: lut.length - 1,
+      mask,
+    });
   }
+  heights = solve.applyMask(heights, mask);
+  return { heights, lut, w, h };
+}
 
-  const numIn = (obj, key, step, min, max, fmt = (v) => String(v)) =>
-    h("input", { class: "val", type: "number", inputmode: "decimal", step, min, max,
-      value: fmt(obj[key]), onchange: (e) => {
-        const v = Math.min(max, Math.max(min, parseFloat(e.target.value) || obj[key]));
-        obj[key] = v;
-        e.target.value = fmt(v);
-      } });
+function renderSolve(screen, action) {
+  if (!app.prepped) {
+    screen.append(h("div", { class: "todo" }, h("b", {}, "nothing prepped"),
+      "Go back to Prep and continue from there."));
+    return;
+  }
+  const { s } = solveSettings();
+  const stock = DEFAULT_FILAMENTS.map((f) => f.hex.toUpperCase());
+  if (!s.colours_seeded && s.filaments.every((f, i) => f.hex.toUpperCase() === stock[i])) {
+    importColours();
+  }
+  s.colours_seeded = true;
 
-  screen.append(head("filaments"),
-    h("p", { class: "meta", style: "margin:-4px 0 8px" }, "slot 1 prints lowest"),
-    h("div", { class: "fil-table" },
-      h("span"), h("span", { class: "th" }, "colour"), h("span", { class: "th" }, "TD mm"),
-      h("span", { class: "th" }, "layers"),
-      s.filaments.flatMap((f) => [
-        h("span", { class: "idx" }, String(f.slot)),
-        h("span", { class: "sw", style: `background:${f.hex}` }),
-        numIn(f, "td_mm", "0.01", 0.05, 10, (v) => v.toFixed(2)),
-        numIn(f, "band_layers", "1", 0, 60),
-      ])));
+  const view = h("div", { class: "solve-view" });
+  const ramp = h("div", { class: "ramp" });
+  const readout = h("div");
+  let live = null;
 
-  const num = (labelText, key, step, min, max) =>
-    h("label", { class: "field" }, labelText,
-      h("input", { class: "val", type: "number", inputmode: "decimal", step, min, max, value: String(s[key]),
-        onchange: (e) => {
-          const v = Math.min(max, Math.max(min, parseFloat(e.target.value) || s[key]));
-          s[key] = v;
-          e.target.value = String(v);
-        } }));
+  const invalidate = () => {
+    if (app.project.status.solve === COMPLETE) { setStatus("solve", PENDING); refreshStepper(); }
+  };
 
-  screen.append(head("layers"),
-    num("layer height (mm)", "layer_height_mm", "0.01", 0.04, 0.2),
-    num("base layers", "base_layers", "1", 1, 40),
-    num("max colour layers", "max_layers", "1", 5, 120),
+  const draw = () => {
+    if (!live) return;
+    const { lh, baseLayers, mm } = solveSettings();
+    const { proxy } = app;
+    const baseMm = baseLayers * lh;
+    let el;
+    if (solveView === "source") {
+      const id = new ImageData(new Uint8ClampedArray(proxy.data.data), proxy.w, proxy.h);
+      if (proxy.mask) for (let i = 0; i < proxy.mask.length; i++) if (!proxy.mask[i]) id.data.set([17, 17, 16, 255], i * 4);
+      el = canvasOf(id);
+    } else if (solveView === "height") {
+      el = canvasOf(mesh.renderHeight({ heights: live.heights, w: proxy.w, h: proxy.h, mask: proxy.mask }));
+    } else if (solveView === "oblique") {
+      el = mesh.renderOblique({ heights: live.heights, w: proxy.w, h: proxy.h, lut: live.lut, mask: proxy.mask,
+        baseHex: s.filaments[0].hex, layerH: lh, baseMm, physicalW: mm, targetWidth: 640, maxCols: 180 });
+    } else {
+      el = canvasOf(mesh.renderTop({ heights: live.heights, w: proxy.w, h: proxy.h, lut: live.lut,
+        mask: proxy.mask, layerH: lh, baseMm, cellMm: mm / proxy.w }));
+    }
+    el.className = "preview-out";
+    view.replaceChildren(el);
+  };
 
-    head("depth solve"),
-    h("div", { class: "todo" },
-      h("b", {}, "waiting on the engine port"),
-      "The LUT, dithering and heightmap solve get ported from the desktop's core/ " +
-      "and checked against its output before this button goes live."));
+  const recompute = () => {
+    live = solveImage(app.proxy);
+    const { lh, baseLayers, mm } = solveSettings();
+    const t = solve.totals(s.filaments, lh, baseLayers);
+    const distinct = solve.distinctColours(live.lut);
+    const border = s.border.mode || "raised";
+    const rimMm = t.base_mm + solve.bandEndLayer(s.filaments, s.border.frame_slot ?? 1) * lh;
+    const edge = border === "raised" ? `rim ${rimMm.toFixed(2)} mm` : border === "flush" ? "flush edge" : "no border";
+    const waste = t.colour_layers - distinct + 1;
+    const mode = app.project.prep.shape?.mode || "rect";
+    readout.replaceChildren(kv([
+      ["total", `${t.total_layers} layers · ${t.total_mm.toFixed(2)} mm`],
+      ["base", `${t.base_mm.toFixed(2)} mm (${baseLayers} layers)`],
+      ["outline", app.prepped.mask ? `${shape.MODE_LABELS[mode]} (${(shape.coverage(app.prepped.mask) * 100).toFixed(0)}% of crop)` : "rectangle"],
+      ["edge", edge],
+      ["rigidity", solve.rigidityNote(t.base_mm, t.base_mm, mm)],
+      ["distinct", `${distinct} of ${t.colour_layers + 1} tones${waste > 6 ? ` · ${waste} duplicated, trim a band` : ""}`],
+    ]));
+    ramp.replaceChildren(...live.lut.map((c) => h("i", { style: `background:${solve.rgbToHex(c)}` })));
+    draw();
+  };
+  const queue = () => { invalidate(); clearTimeout(solveTimer); solveTimer = setTimeout(recompute, 150); };
+
+  const viewChips = chipGroup([
+    { key: "sim", label: "simulated print" }, { key: "oblique", label: "~30° angle" },
+    { key: "height", label: "height" }, { key: "source", label: "source" },
+  ], solveView, (k) => { solveView = k; draw(); });
+
+  // filaments
+  const filTable = () => h("div", { class: "fil-table" },
+    h("span"), h("span", { class: "th" }, "colour"), h("span", { class: "th" }, "TD mm"),
+    h("span", { class: "th" }, "layers"),
+    s.filaments.flatMap((f) => [
+      h("span", { class: "idx" }, String(f.slot)),
+      h("input", { class: "sw", type: "color", value: f.hex.toLowerCase(), oninput: (e) => {
+        f.hex = e.target.value.toUpperCase(); f.name = ""; queue();
+      } }),
+      h("input", { class: "val", type: "number", inputmode: "decimal", step: "0.05", min: "0.05", max: "6",
+        value: Number(f.td_mm).toFixed(2), onchange: (e) => {
+          const v = Math.min(6, Math.max(0.05, parseFloat(e.target.value) || f.td_mm));
+          f.td_mm = v; e.target.value = v.toFixed(2); queue();
+        } }),
+      h("input", { class: "val", type: "number", inputmode: "numeric", step: "1", min: "0", max: "120",
+        value: String(f.band_layers), onchange: (e) => {
+          const v = Math.min(120, Math.max(0, parseInt(e.target.value, 10) || 0));
+          f.band_layers = v; e.target.value = String(v); queue();
+        } }),
+    ]));
+  let filEl = filTable();
+
+  const borderWidth = numField("rim width (mm)", s.border.width_mm ?? 3, { step: "0.5", min: 0.4, max: 15,
+    onchange: (v) => { s.border.width_mm = v; queue(); } });
+  const frameSlot = numField("frame colour (slot)", s.border.frame_slot ?? 1, { step: "1", min: 1, max: s.filaments.length,
+    onchange: (v) => { s.border.frame_slot = Math.round(v); queue(); } });
+
+  screen.append(
+    pane("view",
+      h("div", { style: "margin-top:8px" }, viewChips),
+      h("div", { style: "margin-top:10px" }, frame(null, view)),
+      ramp,
+      h("p", { class: "meta", style: "margin-top:4px" }, "reachable tones, bottom layer to top"),
+      readout),
+    pane("ctrl",
+      head("filaments"),
+      h("p", { class: "meta", style: "margin:-4px 0 8px" }, "slot 1 prints lowest · tap a swatch to change it"),
+      filEl,
+      h("button", { class: "btn wide", style: "margin-top:10px", onclick: () => {
+        importColours(); const fresh = filTable(); filEl.replaceWith(fresh); filEl = fresh; queue();
+      } }, "import colours from prep"),
+
+      head("layers"),
+      numField("layer height (mm)", s.layer_height_mm, { step: "0.02", min: 0.04, max: 0.3, fmt: (v) => v.toFixed(2),
+        onchange: (v) => { s.layer_height_mm = v; queue(); } }),
+      numField("base depth (mm)", +(s.base_layers * s.layer_height_mm).toFixed(2), { step: "0.2", min: 0.4, max: 8,
+        fmt: (v) => v.toFixed(2),
+        onchange: (v) => { s.base_layers = Math.max(2, solve.layersForMm(v, s.layer_height_mm)); queue(); } }),
+
+      head("colour"),
+      chipGroup([{ key: "solid", label: "solid bands" }, { key: "blend", label: "translucent blend" }],
+        s.band_mode || "solid", (k) => { s.band_mode = k; queue(); }),
+      h("div", { style: "margin-top:10px" },
+        chipGroup([{ key: "bayer8", label: "dither on" }, { key: "none", label: "dither off" }],
+          s.dither === "none" ? "none" : "bayer8", (k) => { s.dither = k; queue(); })),
+      rangeField("dither amount", Math.round((s.dither_amount ?? 1) * 100), { min: 0, max: 200,
+        fmt: (v) => `${v}%`, oninput: (v) => { s.dither_amount = v / 100; queue(); } }),
+      rangeField("foundations", Math.round((s.slope_mm_per_layer ?? 0) * 100), { min: 0, max: 100,
+        fmt: (v) => (v ? `${(v / 100).toFixed(2)} mm run / layer` : "off"),
+        oninput: (v) => { s.slope_mm_per_layer = v / 100; queue(); } }),
+
+      head("border"),
+      chipGroup([{ key: "raised", label: "raised rim" }, { key: "flush", label: "flush" }, { key: "none", label: "none" }],
+        s.border.mode || "raised", (k) => { s.border.mode = k; s.border.enabled = k !== "none"; queue(); }),
+      app.prepped.mask && h("p", { class: "meta", style: "margin-top:6px" }, "the rim follows the outline"),
+      borderWidth, frameSlot),
+  );
 
   action.append(
-    h("button", { class: "btn ghost", onclick: () => go("prep") }, "return without saving"),
-    h("button", { class: "btn primary", disabled: true }, "solve  &  continue  →"),
+    h("button", { class: "btn ghost", onclick: () => go("prep") }, "back to prep"),
+    h("button", { class: "btn primary", onclick: commitSolve }, "solve  &  continue  →"),
   );
+  requestAnimationFrame(recompute);
+}
+
+function importColours() {
+  const { s } = solveSettings();
+  const cols = solve.importColours(app.prepped.data.data, app.prepped.mask, s.filaments.length);
+  cols.forEach((hex, i) => { if (s.filaments[i]) { s.filaments[i].hex = hex; s.filaments[i].name = ""; } });
+}
+
+async function commitSolve() {
+  const { s, lh, baseLayers, mode } = solveSettings();
+  if (s.filaments.reduce((n, f) => n + (f.band_layers | 0), 0) < 2) {
+    toast("Give at least one filament some layers", 2400);
+    return;
+  }
+  await busy("solving at full size…", async () => {
+    app.solved = solveImage(app.prepped);
+    s.base_layers = baseLayers;
+    s.base_mm = +(baseLayers * lh).toFixed(3);
+    s.max_layers = app.solved.lut.length - 1;
+    s.band_mode = mode;
+    s.border.rim_layers = solve.bandEndLayer(s.filaments, s.border.frame_slot ?? 1);
+    s.swap_plan = solve.swapPlan(s.filaments, lh, baseLayers);
+    setStatus("solve", COMPLETE);
+    lastFiles = [];
+    go("export");
+  });
 }
 
 // ---------------------------------------------------------------- export
+function modelArgs() {
+  const { s, lh, baseLayers, mm } = solveSettings();
+  const { heights, w, h: hh } = app.solved;
+  return { heights, w, h: hh, mask: app.prepped.mask, physicalW: mm, layerH: lh, baseLayers,
+           filaments: s.filaments, detail: exportOpts.detail, name: app.project.name };
+}
+
 function renderExport(screen, action) {
-  screen.append(head("views"),
-    h("div", { class: "todo" },
-      h("b", {}, "coming after solve"),
-      "Mesh build, Bambu 3MF, filament cost / purge / colour-switch estimate, " +
-      "bed tips, and sending the file out through the iOS share sheet."));
+  if (!app.solved) {
+    screen.append(h("div", { class: "todo" }, h("b", {}, "nothing solved"),
+      "Go back to Solve and continue from there."));
+    return;
+  }
+  const { s, lh, baseLayers, mm } = solveSettings();
+  const { heights, w, h: hh, lut } = app.solved;
+  const mask = app.prepped.mask;
+  const ex = app.project.export;
+
+  const top = canvasOf(mesh.renderTop({ heights, w, h: hh, lut, mask, layerH: lh,
+    baseMm: baseLayers * lh, cellMm: mm / w }));
+  top.className = "preview-out";
+  const oblique = mesh.renderOblique({ heights, w, h: hh, lut, mask, baseHex: s.filaments[0].hex,
+    layerH: lh, baseMm: baseLayers * lh, physicalW: mm, targetWidth: 640 });
+  oblique.className = "preview-out";
+
+  const stats = h("p", { class: "meta" }, "building mesh…");
+  const restat = () => {
+    const model = mesh.buildModel(modelArgs());
+    const mode = app.project.prep.shape?.mode || "rect";
+    stats.textContent = `${model.stats.parts} parts · ${model.stats.triangles.toLocaleString()} triangles · ` +
+      `plate ${exportOpts.plate} · outline ${mask ? shape.MODE_LABELS[mode] : "rectangle"}`;
+  };
+
+  const info = h("div");
+  const reinfo = () => {
+    const est = mesh.estimates({ heights, w, h: hh, mask, filaments: s.filaments, layerH: lh,
+      baseLayers, physicalW: mm, pricePerKg: ex.price_per_kg ?? 25, bandMode: s.band_mode });
+    const [fw, fd] = est.footprint_mm;
+    const tips = [];
+    if (est.max_height_mm / Math.max(fw, fd) > 0.35) tips.push("tall for its footprint: add a brim in Studio");
+    if (est.switches >= 6) tips.push(`${est.switches} colour changes is a lot of AMS time; keep spools dry`);
+    tips.push(`slot 1 (${est.base_hex}) touches the plate: set bed temp and adhesion for that filament`);
+    tips.push("wipe the plate with IPA before printing");
+    info.replaceChildren(
+      kv([
+        ["cost", `$${est.total_cost.toFixed(2)} · ${est.total_grams.toFixed(1)} g`],
+        ["purge", `${est.purge_g.toFixed(1)} g · ${est.switches} colour switch${est.switches === 1 ? "" : "es"}`],
+        ["size", `${fw.toFixed(0)} × ${fd.toFixed(0)} mm · ${est.max_height_mm.toFixed(2)} mm tall`],
+      ]),
+      h("ul", { class: "tips" }, tips.map((t) => h("li", {}, t))));
+  };
+
+  const filesBox = h("div");
+  const showFiles = () => {
+    filesBox.replaceChildren(...(lastFiles.length ? [head("files"),
+      h("div", { class: "files" }, lastFiles.map((f) =>
+        h("a", { class: "btn wide", href: f.url, download: f.name }, `⬇  ${f.name}`))),
+      h("p", { class: "meta" }, "tap to save again. open the .3mf in Bambu Handy or Studio.")] : []));
+  };
+
+  const name = h("input", { class: "val wide-val", value: app.project.name, onchange: (e) => {
+    const v = e.target.value.trim();
+    if (v) app.project.name = v;
+  } });
+
+  screen.append(
+    pane("view",
+      head("views"),
+      frame("top down", top),
+      h("div", { style: "margin-top:10px" }, frame("~30° from the plate", oblique)),
+      stats),
+    pane("ctrl",
+      head("filament slots"),
+      h("div", { class: "slots" }, s.filaments.map((f, i) =>
+        h("div", { class: "slot" }, h("span", { class: "sw", style: `background:${f.hex}` }),
+          `slot ${f.slot}  ${f.hex}${i === 0 ? " · lowest" : i === s.filaments.length - 1 ? " · top" : ""}`))),
+      head("filament & print info"),
+      info,
+      numField("price ($ / kg)", ex.price_per_kg ?? 25, { step: "1", min: 0, max: 500, fmt: (v) => v.toFixed(2),
+        onchange: (v) => { ex.price_per_kg = v; reinfo(); } }),
+      head("plate"),
+      chipGroup([{ key: "A1", label: "A1" }, { key: "A1 mini", label: "A1 mini" }], exportOpts.plate,
+        (k) => { exportOpts.plate = k; restat(); }),
+      head("mesh detail"),
+      chipGroup([{ key: "draft", label: "draft" }, { key: "standard", label: "standard" }, { key: "fine", label: "fine" }],
+        exportOpts.detail, (k) => { exportOpts.detail = k; restat(); }),
+      head("formats"),
+      h("div", { class: "chips" }, [["3mf", "3MF (Bambu)"], ["stl", "STL"]].map(([k, label]) =>
+        h("button", { class: `chip${exportOpts.formats[k] ? " on" : ""}`, onclick: (e) => {
+          exportOpts.formats[k] = !exportOpts.formats[k];
+          e.currentTarget.classList.toggle("on", exportOpts.formats[k]);
+        } }, label))),
+      head("name"),
+      name,
+      filesBox),
+  );
+
   action.append(
-    h("button", { class: "btn ghost", onclick: () => go("solve") }, "return without exporting"),
-    h("button", { class: "btn primary", disabled: true }, "commit  &  export  →"));
+    h("button", { class: "btn ghost", onclick: () => go("solve") }, "back to solve"),
+    h("button", { class: "btn primary", onclick: () => commitExport() }, "commit  &  export  →"),
+  );
+  requestAnimationFrame(() => { restat(); reinfo(); showFiles(); });
+
+  async function commitExport() {
+    const formats = Object.keys(exportOpts.formats).filter((k) => exportOpts.formats[k]);
+    if (!formats.length) return toast("Choose 3MF, STL, or both");
+    const stem = (app.project.name || "huelite").replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "huelite";
+    const files = await busy("building files…", async () => {
+      const model = mesh.buildModel(modelArgs());
+      if (!model.parts.length) throw new Error("every filament band came out empty");
+      const out = [];
+      if (formats.includes("3mf")) {
+        out.push(new File([await bambu3mf.make3mf({ ...model, plate: exportOpts.plate },
+          { colours: s.filaments.map((f) => f.hex), layerHeight: lh })], `${stem}.3mf`, { type: "model/3mf" }));
+      }
+      if (formats.includes("stl")) out.push(new File([bambu3mf.makeStl(model)], `${stem}.stl`, { type: "model/stl" }));
+      out.push(new File([bambu3mf.slotNote(s.filaments)], `${stem}-filament-slots.txt`, { type: "text/plain" }));
+      return out;
+    }).catch((err) => { toast(`Export failed: ${err.message}`, 3000); return null; });
+    if (!files) return;
+
+    lastFiles.forEach((f) => URL.revokeObjectURL(f.url));
+    lastFiles = files.map((f) => ({ name: f.name, url: URL.createObjectURL(f) }));
+    ex.formats = formats;
+    ex.last_export = { time: new Date().toISOString().slice(0, 19), detail: exportOpts.detail,
+                       plate: exportOpts.plate, name: app.project.name, files: files.map((f) => f.name) };
+    setStatus("export", COMPLETE);
+    refreshStepper();
+    showFiles();
+    await deliver(files);
+  }
+}
+
+/** Share sheet when the browser can share files (https), otherwise a
+ *  plain download of the main file; the list below the rail has the rest. */
+async function deliver(files) {
+  const main = files[0];
+  try {
+    if (navigator.canShare?.({ files })) {
+      await navigator.share({ files, title: main.name });
+      return toast("shared");
+    }
+    if (navigator.canShare?.({ files: [main] })) {
+      await navigator.share({ files: [main], title: main.name });
+      return toast("shared");
+    }
+  } catch (err) {
+    if (err?.name === "AbortError") return;
+  }
+  const a = h("a", { href: lastFiles[0].url, download: main.name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  toast(`saved ${main.name} to downloads`, 2600);
 }
 
 render();

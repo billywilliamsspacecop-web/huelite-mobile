@@ -21,10 +21,24 @@ export const DEFAULT_FILAMENTS = [
 
 const now = () => new Date().toISOString().slice(0, 19);
 
+// crypto.randomUUID only exists in a secure context (https or localhost).
+// Opening the dev server from a phone over Wi-Fi is plain http, so fall
+// back to a v4 UUID built from getRandomValues, which works everywhere.
+function uuid() {
+  if (globalThis.crypto?.randomUUID) {
+    try { return crypto.randomUUID(); } catch { /* not a secure context */ }
+  }
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const hex = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export function defaultData(name) {
   return {
     schema_version: 1,
-    id: crypto.randomUUID(),
+    id: uuid(),
     name,
     created: now(),
     modified: now(),
@@ -42,6 +56,8 @@ export function defaultData(name) {
         denoise: 0, sharpen: 0, pixelize: 0, decimate: 0,
       },
       focal_regions: [],
+      // Print outline: rect | ellipse | alpha | knockout (engine/shape.js)
+      shape: { mode: "rect", tolerance: 0.25, min_feature_mm: 0.8 },
     },
     solve: {
       layer_height_mm: 0.08,
@@ -49,6 +65,10 @@ export function defaultData(name) {
       max_layers: 45,
       filaments: DEFAULT_FILAMENTS.map((f) => ({ ...f })),
       dither: "bayer8",
+      dither_amount: 1.0,
+      band_mode: "solid",
+      slope_mm_per_layer: 0.3,
+      colours_seeded: false,
       border: { enabled: true, width_mm: 3.0, mode: "raised", frame_slot: 1 },
     },
     export: {
@@ -60,12 +80,14 @@ export function defaultData(name) {
   };
 }
 
-// In-memory for the shell. Persistence (IndexedDB) comes with the engine
-// port, since that's when there are heightmaps worth keeping.
+// In memory for now; saving projects between launches (IndexedDB) is next.
 export const app = {
   project: null,
-  sourceBitmap: null, // ImageBitmap of the picked photo
-  preppedCanvas: null, // cropped/rotated output, feeds Solve
+  sourceBitmap: null,   // ImageBitmap of the picked photo
+  sourceHasAlpha: false,
+  prepped: null,        // { canvas, data: ImageData (flattened), mask, w, h }
+  proxy: null,          // same, small, for the live solve
+  solved: null,         // { heights, w, h, lut } at full prepped size
   stage: "prep",
 };
 
