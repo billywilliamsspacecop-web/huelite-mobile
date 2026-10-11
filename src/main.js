@@ -6,6 +6,7 @@ import * as solve from "./engine/solve.js";
 import * as mesh from "./engine/mesh.js";
 import * as bambu3mf from "./engine/bambu3mf.js";
 import * as imaging from "./engine/imaging.js";
+import * as store from "./store.js";
 
 const root = document.getElementById("app");
 const SOLVE_PROXY = 360;      // live solve resolution (long edge)
@@ -165,15 +166,118 @@ const picker = h("input", { type: "file", accept: "image/*", hidden: true,
       // a transparent PNG almost always means "cut it out"
       if (app.sourceHasAlpha) app.project.prep.shape.mode = "alpha";
       app.prepped = app.proxy = app.solved = null;
+      app.sourceFile = file;
       lastFiles = [];
       aspectKey = "free";
+      prepView = "crop";
+      preSuggest = null;
       go("prep");
+      await store.putFile(app.project.id, "source", file);
+      await persistNow(await thumbBlob(bmp));
     } catch (err) {
       console.error(err);
       toast("Couldn't open that photo");
     }
   } });
 document.body.append(picker);
+
+// ---------------------------------------------------------------- saving
+let persistTimer = 0;
+function persistSoon() {
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => persistNow(), 700);
+}
+
+/** Save project.json now (and a fresh thumbnail, if given). */
+async function persistNow(thumb = undefined) {
+  clearTimeout(persistTimer);
+  if (!app.project) return;
+  app.project.modified = new Date().toISOString().slice(0, 19);
+  try {
+    await store.saveProject(app.project, thumb);
+  } catch (err) {
+    console.error(err);
+    toast("couldn't save - is the phone's storage full?", 3000);
+  }
+}
+
+// Any edit anywhere in the app schedules a save; leaving the app saves now.
+for (const ev of ["input", "change", "click"]) root.addEventListener(ev, persistSoon);
+document.addEventListener("visibilitychange", () => { if (document.hidden) persistNow(); });
+
+/** 256px square PNG for the project list. */
+function thumbBlob(source) {
+  const c = document.createElement("canvas");
+  c.width = c.height = 256;
+  const side = Math.min(source.width, source.height);
+  c.getContext("2d").drawImage(source, (source.width - side) / 2, (source.height - side) / 2,
+    side, side, 0, 0, 256, 256);
+  return new Promise((r) => c.toBlob(r, "image/png"));
+}
+
+/** The small copy of the prepped image the live solve runs on. */
+function makeProxy(canvas, mask) {
+  const w = canvas.width, hh = canvas.height;
+  const k = Math.min(1, SOLVE_PROXY / Math.max(w, hh));
+  const pw = Math.max(1, Math.round(w * k)), ph = Math.max(1, Math.round(hh * k));
+  const pc = document.createElement("canvas");
+  pc.width = pw; pc.height = ph;
+  const pctx = pc.getContext("2d", { willReadFrequently: true });
+  pctx.imageSmoothingQuality = "high";
+  pctx.drawImage(canvas, 0, 0, pw, ph);
+  return { data: pctx.getImageData(0, 0, pw, ph), mask: shape.resize(mask, w, hh, pw, ph), w: pw, h: ph };
+}
+
+async function openProject(id) {
+  await busy("opening…", async () => {
+    const rec = await store.getProject(id);
+    const file = await store.getFile(id, "source");
+    if (!rec || !file) { toast("That project is missing its photo", 2600); return; }
+    const bmp = await loadPhoto(file);
+    app.sourceBitmap?.close?.();
+    app.sourceBitmap = bmp;
+    app.sourceFile = file;
+    app.sourceHasAlpha = await sourceHasAlpha(bmp);
+    app.project = rec.data;
+    app.prepped = app.proxy = app.solved = null;
+    const prepped = app.project.status.prep === COMPLETE ? await store.getFile(id, "prepped") : null;
+    if (prepped) {
+      const canvas = document.createElement("canvas");
+      canvas.width = prepped.w; canvas.height = prepped.h;
+      const data = new ImageData(new Uint8ClampedArray(prepped.rgba), prepped.w, prepped.h);
+      canvas.getContext("2d").putImageData(data, 0, 0);
+      app.prepped = { canvas, data, mask: prepped.mask || null, w: prepped.w, h: prepped.h };
+      app.proxy = makeProxy(canvas, app.prepped.mask);
+    } else if (app.project.status.prep === COMPLETE) {
+      setStatus("prep", PENDING);
+    }
+    const solved = app.prepped && app.project.status.solve === COMPLETE ? await store.getFile(id, "solved") : null;
+    if (solved) {
+      const { s, lh, mode } = solveSettings();
+      app.solved = { heights: solved.heights, w: solved.w, h: solved.h,
+                     lut: solve.buildLut(s.filaments, lh, mode).lut };
+    } else if (app.project.status.solve === COMPLETE) {
+      setStatus("solve", PENDING);
+    }
+    lastFiles = [];
+    prepView = "crop";
+    preSuggest = null;
+    aspectKey = "free";
+    const st = app.project.status;
+    go(st.solve === COMPLETE ? "export" : st.prep === COMPLETE ? "solve" : "prep");
+  });
+}
+
+async function closeProject() {
+  await persistNow();
+  app.sourceBitmap?.close?.();
+  app.sourceBitmap = null;
+  app.sourceFile = null;
+  app.project = app.prepped = app.proxy = app.solved = null;
+  lastFiles.forEach((f) => URL.revokeObjectURL(f.url));
+  lastFiles = [];
+  go("prep");
+}
 
 // ---------------------------------------------------------------- shell
 function render() {
@@ -182,17 +286,23 @@ function render() {
   root.innerHTML = "";
   root.dataset.stage = app.stage;
 
-  const name = app.project?.name || "no project";
+  const home = !app.project;
+  root.dataset.home = home ? "1" : "";
+  const name = app.project?.name || "projects";
   const n = STAGES.indexOf(app.stage) + 1;
   root.append(
     h("header", { class: "top" },
       h("div", { class: "top-row" },
-        h("h1", { class: "stage-title" }, `0${n} ${STAGE_LABELS[app.stage]}`),
-        h("div", { class: "brand" }, "HueLite")),
-      h("div", { class: "top-sub" },
-        h("span", { class: "proj", onclick: rename }, name),
-        h("span", { class: "dotsep" }, "·"),
-        STAGE_SUB[app.stage])),
+        h("h1", { class: "stage-title" }, home ? "HueLite" : `0${n} ${STAGE_LABELS[app.stage]}`),
+        app.project
+          ? h("button", { class: "brand link", onclick: closeProject }, "☰ projects")
+          : h("div", { class: "brand" }, "photo → layered print")),
+      home
+        ? h("div", { class: "top-sub" }, "saved on this phone")
+        : h("div", { class: "top-sub" },
+            h("span", { class: "proj", onclick: rename }, name),
+            h("span", { class: "dotsep" }, "·"),
+            STAGE_SUB[app.stage])),
   );
 
   const screen = h("main", { class: "screen" });
@@ -200,7 +310,7 @@ function render() {
   ({ prep: renderPrep, solve: renderSolve, export: renderExport })[app.stage](screen, action);
   root.append(screen);
   if (action.childElementCount) root.append(action);
-  root.append(renderStepper());
+  if (!home) root.append(renderStepper());
 }
 
 function renderStepper() {
@@ -235,12 +345,7 @@ function rename() {
 // ---------------------------------------------------------------- prep
 function renderPrep(screen, action) {
   if (!app.sourceBitmap) {
-    screen.append(h("div", { class: "pick" },
-      frame(null, h("button", { class: "drop", onclick: () => picker.click() },
-        h("b", {}, "+ choose a photo"),
-        h("span", {}, "library or camera · PNG cut-outs keep their shape"))),
-      h("p", { class: "meta" },
-        "turns it into a layered, multi-filament print for the A1.")));
+    renderHome(screen);
     return;
   }
 
@@ -469,6 +574,47 @@ function renderPrep(screen, action) {
   );
 }
 
+function renderHome(screen) {
+  const list = h("div", { class: "projects" }, h("p", { class: "meta" }, "loading projects…"));
+  screen.append(
+    pane("view", h("div", { class: "pick" },
+      frame(null, h("button", { class: "drop drop-home", onclick: () => picker.click() },
+        h("b", {}, "+ new from a photo"),
+        h("span", {}, "library or camera · PNG cut-outs keep their shape"))),
+      h("p", { class: "meta" }, "turns it into a layered, multi-filament print for the A1."))),
+    pane("ctrl", head("projects"), list));
+
+  store.listProjects().then((recs) => {
+    if (!recs.length) {
+      list.replaceChildren(h("p", { class: "meta" }, "nothing saved yet - projects you start are kept on this phone."));
+      return;
+    }
+    list.replaceChildren(...recs.map((rec) => {
+      const d = rec.data;
+      const img = h("img", { class: "thumb", alt: "" });
+      if (rec.thumb) img.src = URL.createObjectURL(rec.thumb);
+      const next = STAGES.find((st) => d.status[st] !== COMPLETE);
+      const when = (rec.modified || "").replace("T", "  ").slice(0, 17);
+      return h("div", { class: "project" },
+        h("button", { class: "project-open", onclick: () => openProject(rec.id) },
+          img,
+          h("span", { class: "project-text" },
+            h("b", {}, d.name),
+            h("span", { class: "meta" }, `${when} · ${next ? `next: ${STAGE_LABELS[next].toLowerCase()}` : "complete"}`),
+            h("span", { class: "pips" }, STAGES.map((st) =>
+              h("i", { class: d.status[st] === COMPLETE ? "on" : "" }, STAGE_LABELS[st]))))),
+        h("button", { class: "project-del", title: "delete", onclick: async () => {
+          if (!confirm(`Delete "${d.name}" from this phone? This can't be undone.`)) return;
+          await store.deleteProject(rec.id);
+          render();
+        } }, "✕"));
+    }));
+  }).catch((err) => {
+    console.error(err);
+    list.replaceChildren(h("p", { class: "meta" }, "couldn't read saved projects on this browser."));
+  });
+}
+
 function shapeVerdict(mode, m) {
   if (!m) return "prints the whole crop";
   const cover = shape.coverage(m);
@@ -498,18 +644,15 @@ async function commitPrep() {
     const prepped = new ImageData(done.data, w, hh);
     ctx.putImageData(prepped, 0, 0);
     app.prepped = { canvas: out, data: prepped, mask, w, h: hh };
-
-    const k = Math.min(1, SOLVE_PROXY / Math.max(w, hh));
-    const pw = Math.max(1, Math.round(w * k)), ph = Math.max(1, Math.round(hh * k));
-    const pc = document.createElement("canvas");
-    pc.width = pw; pc.height = ph;
-    const pctx = pc.getContext("2d", { willReadFrequently: true });
-    pctx.imageSmoothingQuality = "high";
-    pctx.drawImage(out, 0, 0, pw, ph);
-    app.proxy = { data: pctx.getImageData(0, 0, pw, ph), mask: shape.resize(mask, w, hh, pw, ph), w: pw, h: ph };
+    app.proxy = makeProxy(out, mask);
     app.solved = null;
     p.output_px = [w, hh];
     setStatus("prep", COMPLETE);
+    const id = app.project.id;
+    await store.putFile(id, "prepped", { w, h: hh, rgba: prepped.data, mask });
+    await store.deleteFile(id, "solved");
+    const shown = mask ? canvasOf(checkered(mask, w, hh, prepped)) : out;
+    await persistNow(await thumbBlob(shown));
     go("solve");
   });
 }
@@ -719,6 +862,11 @@ async function commitSolve() {
     s.swap_plan = solve.swapPlan(s.filaments, lh, baseLayers);
     setStatus("solve", COMPLETE);
     lastFiles = [];
+    const { heights, w, h: hh, lut } = app.solved;
+    await store.putFile(app.project.id, "solved", { w, h: hh, heights });
+    const top = canvasOf(mesh.renderTop({ heights, w, h: hh, lut, mask: app.prepped.mask, layerH: lh,
+      baseMm: baseLayers * lh, cellMm: app.project.prep.physical_width_mm / w }));
+    await persistNow(await thumbBlob(top));
     go("export");
   });
 }
