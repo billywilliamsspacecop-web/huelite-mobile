@@ -24,7 +24,7 @@ const now = () => new Date().toISOString().slice(0, 19);
 // crypto.randomUUID only exists in a secure context (https or localhost).
 // Opening the dev server from a phone over Wi-Fi is plain http, so fall
 // back to a v4 UUID built from getRandomValues, which works everywhere.
-function uuid() {
+export function uuid() {
   if (globalThis.crypto?.randomUUID) {
     try { return crypto.randomUUID(); } catch { /* not a secure context */ }
   }

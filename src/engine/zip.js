@@ -12,7 +12,7 @@ const CRC_TABLE = (() => {
   return t;
 })();
 
-function crc32(chunks) {
+export function crc32(chunks) {
   let c = 0xffffffff;
   for (const b of chunks) for (let i = 0; i < b.length; i++) c = CRC_TABLE[(c ^ b[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
@@ -84,4 +84,41 @@ export async function makeZip(entries, mime = "application/zip") {
   end.setUint32(12, cenSize, true);
   end.setUint32(16, offset, true);
   return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: mime });
+}
+
+/** Read a ZIP: -> Map(name -> async () => Uint8Array). Handles stored and
+ *  deflated entries, which covers Finder's "Compress" and our own files. */
+export function readZip(bytes) {
+  bytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let end = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { end = i; break; }
+  }
+  if (end < 0) throw new Error("not a zip file");
+  const count = dv.getUint16(end + 10, true);
+  let p = dv.getUint32(end + 16, true);
+  const dec = new TextDecoder();
+  const out = new Map();
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) throw new Error("damaged zip directory");
+    const method = dv.getUint16(p + 10, true);
+    const csize = dv.getUint32(p + 20, true);
+    const nameLen = dv.getUint16(p + 28, true);
+    const extraLen = dv.getUint16(p + 30, true);
+    const commentLen = dv.getUint16(p + 32, true);
+    const local = dv.getUint32(p + 42, true);
+    const name = dec.decode(bytes.subarray(p + 46, p + 46 + nameLen));
+    p += 46 + nameLen + extraLen + commentLen;
+    if (name.endsWith("/")) continue;
+    out.set(name, async () => {
+      const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
+      const data = bytes.subarray(start, start + csize);
+      if (method === 0) return data.slice();
+      if (method !== 8) throw new Error(`unsupported zip compression (${method})`);
+      const ds = new DecompressionStream("deflate-raw");
+      return new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(ds)).arrayBuffer());
+    });
+  }
+  return out;
 }

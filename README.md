@@ -16,8 +16,9 @@ Prep → Solve → Export all run on the phone, with no server.
 | Depth solve: filaments + TD, LUT, dither, foundations, rim along the outline | done |
 | Previews: simulated print, ~30° angle, height, source | done |
 | Export: Bambu 3MF + STL + slot note, cost/purge estimate, share sheet or download | done |
-| Prep adjustments (brightness, contrast, denoise, decimate...) | not yet |
-| Saving projects between launches (IndexedDB) | not yet |
+| Prep adjustments, presets, suggest for print (pixel-identical to the desktop) | done |
+| Saving projects between launches (IndexedDB), project list | done |
+| Project .zip export/import, same folder layout as the desktop | done |
 
 The project data mirrors the desktop `project.json` schema, so projects can
 move between the phone and the Mac later.
@@ -32,13 +33,25 @@ move between the phone and the Mac later.
 | `solve.js` | `core/solve.py` |
 | `mesh.js` | `core/mesh.py` |
 | `bambu3mf.js`, `zip.js` | `core/bambu3mf.py` |
+| `imaging.js` | `core/imaging.py` (Pillow) |
+| `projectzip.js`, `png.js` | a project folder, `core/project.py` |
 
-On the same input it matches the desktop exactly: the same masks,
-heightmap and mesh, and a byte-identical `3D/3dmodel.model` inside the
-3MF. Keep it that way: when one side changes, change the other. Colour
+On the same input it matches the desktop exactly: the same Prep
+adjustments pixel for pixel (Pillow's filters are reproduced, including
+its median cut), the same masks, heightmap and mesh, and a byte-identical
+`3D/3dmodel.model` inside the 3MF. Keep it that way: when one side changes, change the other. Colour
 import is the one deliberate difference: the phone clusters colours
 instead of using PIL's median cut, so a small but real area (black text
 on a red badge) still gets its own slot.
+
+## Moving projects between phone and Mac
+
+Phone → Mac: "zip" on a project (or "save whole project" in Export), then
+unzip it into `~/Documents/HueLite/projects/`. Mac → phone: Finder ›
+Compress a project folder, then "import a project (.zip)" on the phone.
+
+Saved projects live in the browser, per address: `http://192.168.x.x:5173`
+and `http://localhost:5173` each keep their own list.
 
 ## Run on a phone (same Wi-Fi as the Mac)
 

@@ -7,6 +7,8 @@ import * as mesh from "./engine/mesh.js";
 import * as bambu3mf from "./engine/bambu3mf.js";
 import * as imaging from "./engine/imaging.js";
 import * as store from "./store.js";
+import * as projectzip from "./engine/projectzip.js";
+import { uuid } from "./state.js";
 
 const root = document.getElementById("app");
 const SOLVE_PROXY = 360;      // live solve resolution (long edge)
@@ -267,6 +269,75 @@ async function openProject(id) {
     go(st.solve === COMPLETE ? "export" : st.prep === COMPLETE ? "solve" : "prep");
   });
 }
+
+/** Share sheet if the browser can share this file, else a download. */
+async function saveBlob(blob, filename) {
+  const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
+  try {
+    if (navigator.canShare?.({ files: [file] })) {
+      await navigator.share({ files: [file], title: filename });
+      return;
+    }
+  } catch (err) {
+    if (err?.name === "AbortError") return;
+  }
+  const url = URL.createObjectURL(file);
+  const a = h("a", { href: url, download: filename });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  toast(`saved ${filename} to downloads`, 2600);
+}
+
+/** The whole project as a desktop project folder, zipped. */
+async function exportProjectZip(id) {
+  if (app.project?.id === id) await persistNow();
+  const result = await busy("packing project…", async () => {
+    const rec = await store.getProject(id);
+    const [source, prepped, solved] = await Promise.all(
+      ["source", "prepped", "solved"].map((n) => store.getFile(id, n)));
+    const st = rec.data.status;
+    return projectzip.pack({ data: rec.data, source,
+      prepped: st.prep === COMPLETE ? prepped : null,
+      solved: st.prep === COMPLETE && st.solve === COMPLETE ? solved : null });
+  }).catch((err) => { console.error(err); toast(`couldn't pack it: ${err.message}`, 3000); return null; });
+  if (result) await saveBlob(result.blob, result.filename);
+}
+
+async function importProjectZip(file) {
+  await busy("importing…", async () => {
+    const { data, source, prepped, solved } = await projectzip.unpack(await file.arrayBuffer());
+    if (!data.id || await store.getProject(data.id)) {
+      // already on this phone: keep both
+      if (data.id) data.name = `${data.name} (copy)`;
+      data.id = uuid();
+    }
+    if (!prepped) data.status = { prep: PENDING, solve: PENDING, export: PENDING };
+    else if (!solved) data.status = { ...data.status, solve: PENDING, export: PENDING };
+    await store.putFile(data.id, "source", source);
+    if (prepped) await store.putFile(data.id, "prepped", prepped);
+    if (solved) await store.putFile(data.id, "solved", solved);
+    let thumb = null;
+    if (prepped) {
+      const img = new ImageData(new Uint8ClampedArray(prepped.rgba), prepped.w, prepped.h);
+      thumb = await thumbBlob(canvasOf(prepped.mask ? checkered(prepped.mask, prepped.w, prepped.h, img) : img));
+    } else {
+      thumb = await thumbBlob(await createImageBitmap(source));
+    }
+    await store.saveProject(data, thumb);
+    toast(`imported "${data.name}"`, 2400);
+  }).catch((err) => { console.error(err); toast(`couldn't import: ${err.message}`, 3600); });
+  render();
+}
+
+const zipPicker = h("input", { type: "file", accept: ".zip,application/zip", hidden: true,
+  onchange: (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) importProjectZip(file);
+  } });
+document.body.append(zipPicker);
 
 async function closeProject() {
   await persistNow();
@@ -582,7 +653,11 @@ function renderHome(screen) {
         h("b", {}, "+ new from a photo"),
         h("span", {}, "library or camera · PNG cut-outs keep their shape"))),
       h("p", { class: "meta" }, "turns it into a layered, multi-filament print for the A1."))),
-    pane("ctrl", head("projects"), list));
+    pane("ctrl", head("projects"), list,
+      h("button", { class: "btn wide", style: "margin-top:12px", onclick: () => zipPicker.click() },
+        "import a project (.zip)"),
+      h("p", { class: "meta" }, "zip a project folder on the Mac (Finder › Compress) and open it here, " +
+        "or save one from here and unzip it into Documents/HueLite/projects on the Mac.")));
 
   store.listProjects().then((recs) => {
     if (!recs.length) {
@@ -603,6 +678,7 @@ function renderHome(screen) {
             h("span", { class: "meta" }, `${when} · ${next ? `next: ${STAGE_LABELS[next].toLowerCase()}` : "complete"}`),
             h("span", { class: "pips" }, STAGES.map((st) =>
               h("i", { class: d.status[st] === COMPLETE ? "on" : "" }, STAGE_LABELS[st]))))),
+        h("button", { class: "project-del", title: "save as .zip", onclick: () => exportProjectZip(rec.id) }, "zip"),
         h("button", { class: "project-del", title: "delete", onclick: async () => {
           if (!confirm(`Delete "${d.name}" from this phone? This can't be undone.`)) return;
           await store.deleteProject(rec.id);
@@ -966,7 +1042,10 @@ function renderExport(screen, action) {
         } }, label))),
       head("name"),
       name,
-      filesBox),
+      filesBox,
+      head("project"),
+      h("button", { class: "btn wide", onclick: () => exportProjectZip(app.project.id) },
+        "save whole project (.zip) for the Mac")),
   );
 
   action.append(

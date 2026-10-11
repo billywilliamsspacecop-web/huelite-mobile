@@ -261,3 +261,4 @@ label.range input[type=range] { width: 100%; accent-color: var(--accent); height
 .project-del:active { color: #e07a5f; border-color: #e07a5f; }
 .drop.drop-home { aspect-ratio: auto; height: 30vh; min-height: 160px; }
 @media (min-width: 760px) { .drop.drop-home { height: 50vh; } }
+.project-del { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
