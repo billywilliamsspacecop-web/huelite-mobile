@@ -5,16 +5,20 @@ import * as shape from "./engine/shape.js";
 import * as solve from "./engine/solve.js";
 import * as mesh from "./engine/mesh.js";
 import * as bambu3mf from "./engine/bambu3mf.js";
+import * as imaging from "./engine/imaging.js";
 
 const root = document.getElementById("app");
 const SOLVE_PROXY = 360;      // live solve resolution (long edge)
 const PREP_OVERLAY_PX = 320;  // shape preview resolution (long edge)
+const PREP_RESULT_PX = 420;   // adjusted-result preview resolution (long edge)
 let cropper = null;
 let aspectKey = "free";
 let solveView = "sim";
 let solveTimer = 0;
 let exportOpts = { detail: "standard", plate: "A1", formats: { "3mf": true, stl: false } };
 let lastFiles = [];           // [{ name, url }] from the last export
+let prepView = "crop";        // crop | result
+let preSuggest = null;        // adjustments before the last "suggest", for undo
 
 // ---------------------------------------------------------------- helpers
 const h = (tag, attrs = {}, ...kids) => {
@@ -44,6 +48,34 @@ function canvasOf(imageData) {
   c.height = imageData.height;
   c.getContext("2d").putImageData(imageData, 0, 0);
   return c;
+}
+
+/** Checker out pixels outside mask m. Over an image (composited) when
+ *  `under` is given, else on a transparent layer for the crop overlay. */
+function checkered(m, w, hh, under = null) {
+  const out = under ? new ImageData(new Uint8ClampedArray(under.data), w, hh) : new ImageData(w, hh);
+  const cell = Math.max(3, Math.round(w / 40));
+  for (let y = 0; y < hh; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (m[i]) continue;
+      const v = ((Math.floor(x / cell) + Math.floor(y / cell)) & 1) ? 44 : 28;
+      out.data.set([v, v, v - 3, under ? 255 : 240], i * 4);
+    }
+  }
+  return out;
+}
+
+/** The crop, small, as plain RGBA ImageData (before any flattening). */
+function cropSample(oriented, [x, y, w, hh], longEdge) {
+  const k = Math.min(1, longEdge / Math.max(w, hh));
+  const cw = Math.max(1, Math.round(w * k)), ch = Math.max(1, Math.round(hh * k));
+  const c = document.createElement("canvas");
+  c.width = cw; c.height = ch;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(oriented, x, y, w, hh, 0, 0, cw, ch);
+  return ctx.getImageData(0, 0, cw, ch);
 }
 
 /** Chip row where exactly one is on. */
@@ -234,31 +266,41 @@ function renderPrep(screen, action) {
 
   // live shape preview, painted over the crop box by the cropper
   const painter = (oriented, [x, y, w, hgt]) => {
+    queueResult();
     if (p.shape.mode === "rect") { shapeNote.textContent = "prints the whole crop"; return null; }
-    const k = Math.min(1, PREP_OVERLAY_PX / Math.max(w, hgt));
-    const cw = Math.max(1, Math.round(w * k)), ch = Math.max(1, Math.round(hgt * k));
-    const c = document.createElement("canvas");
-    c.width = cw; c.height = ch;
-    const ctx = c.getContext("2d", { willReadFrequently: true });
-    ctx.drawImage(oriented, x, y, w, hgt, 0, 0, cw, ch);
-    const id = ctx.getImageData(0, 0, cw, ch);
+    const id = cropSample(oriented, [x, y, w, hgt], PREP_OVERLAY_PX);
     const m = shape.build(p.shape.mode, id, { tolerance: p.shape.tolerance,
-      pxPerMm: cw / p.physical_width_mm, minFeatureMm: p.shape.min_feature_mm });
+      pxPerMm: id.width / p.physical_width_mm, minFeatureMm: p.shape.min_feature_mm });
     shapeNote.textContent = shapeVerdict(p.shape.mode, m);
     if (!m) return null;
-    const out = new ImageData(cw, ch);
-    const cell = Math.max(3, Math.round(cw / 40));
-    for (let yy = 0; yy < ch; yy++) {
-      for (let xx = 0; xx < cw; xx++) {
-        const i = yy * cw + xx;
-        if (m[i]) continue;
-        const on = ((Math.floor(xx / cell) + Math.floor(yy / cell)) & 1) === 1;
-        const v = on ? 44 : 28;
-        out.data.set([v, v, v - 3, 240], i * 4);
-      }
-    }
-    return canvasOf(out);
+    return canvasOf(checkered(m, id.width, id.height));
   };
+
+  // what Prep will actually hand to Solve: adjusted, with the shape cut
+  const resultHost = h("div", { class: "result-view" });
+  let resultTimer = 0;
+  const renderResult = () => {
+    if (!cropper || prepView !== "result") return;
+    const crop = cropper.getCrop();
+    const id = cropSample(cropper.oriented(), crop, PREP_RESULT_PX);
+    const m = shape.build(p.shape.mode, id, { tolerance: p.shape.tolerance,
+      pxPerMm: id.width / p.physical_width_mm, minFeatureMm: p.shape.min_feature_mm });
+    shape.flatten(id);
+    // pixel blocks are defined at output resolution; scale them for the
+    // preview the same way the desktop does
+    const adj = { ...imaging.DEFAULT_ADJUSTMENTS, ...p.adjustments };
+    if (adj.pixelize > 0) {
+      const outW = Math.round(crop[2] * Math.min(1, MOBILE_OUTPUT_PX / Math.max(crop[2], crop[3])));
+      const blockPreview = (1 + adj.pixelize * 23) * id.width / Math.max(1, outW);
+      adj.pixelize = Math.max(0, Math.min(1, (blockPreview - 1) / 23));
+    }
+    const done = imaging.finish(id, adj);
+    const img = new ImageData(done.data, done.width, done.height);
+    const c = canvasOf(m ? checkered(m, img.width, img.height, img) : img);
+    c.className = "preview-out";
+    resultHost.replaceChildren(c);
+  };
+  const queueResult = () => { clearTimeout(resultTimer); resultTimer = setTimeout(renderResult, 120); };
 
   // mount after it's in the DOM so it can measure its width
   let ready = false; // don't treat the initial layout as a user edit
@@ -277,7 +319,25 @@ function renderPrep(screen, action) {
     p.crop = cropper.getCrop();
     updateReadout(p.crop);
     ready = true;
+    showView(prepView);
   });
+
+  const viewChips = chipGroup([{ key: "crop", label: "crop" }, { key: "result", label: "result" }],
+    prepView, (k) => showView(k));
+  const cropControls = h("div");
+  function showView(k) {
+    prepView = k;
+    cropHost.hidden = k !== "crop";
+    cropControls.hidden = k !== "crop";
+    resultHost.hidden = k !== "result";
+    viewChips.querySelectorAll(".chip").forEach((c, i) => c.classList.toggle("on", (i === 0) === (k === "crop")));
+    if (k === "result") renderResult();
+  }
+  /** an adjustment moved: show its effect */
+  const adjusted = () => {
+    invalidate();
+    if (prepView !== "result") showView("result"); else queueResult();
+  };
 
   const aspectChips = () => chipGroup(ASPECTS.map((a) => ({ key: a.key, label: a.label })), aspectKey,
     (key) => { aspectKey = key; cropper?.setAspect(ASPECTS.find((a) => a.key === key).ratio); });
@@ -309,8 +369,71 @@ function renderPrep(screen, action) {
     cropper?.refreshOverlay();
   });
 
+  // ---- painting: presets, suggest, image sliders, tools
+  p.adjustments = { ...imaging.DEFAULT_ADJUSTMENTS, ...(p.adjustments || {}) };
+  const paintNote = h("p", { class: "meta" },
+    "the closer the source looks to a flat painting, the cleaner the 3D solve. try a preset or let it suggest.");
+  const setAdjustments = (adj, note) => {
+    p.adjustments = { ...imaging.DEFAULT_ADJUSTMENTS, ...adj };
+    const fresh = buildSliders();
+    sliders.replaceWith(fresh);
+    sliders = fresh;
+    if (note) paintNote.textContent = note;
+    adjusted();
+  };
+  const undoBtn = h("button", { class: "chip", disabled: !preSuggest, onclick: () => {
+    if (!preSuggest) return;
+    setAdjustments(preSuggest, "back to what you had before suggest");
+    preSuggest = null;
+    undoBtn.disabled = true;
+  } }, "↺ undo suggest");
+  const PRESET_NOTES = {
+    poster: "smoothed, a little punchier, 12 colours",
+    painterly: "soft with edges kept, 18 colours",
+    flat: "bold shapes only, 6 colours",
+    pixel: "mosaic blocks, 8 colours",
+  };
+  const presets = h("div", { class: "chips" },
+    Object.keys(imaging.PRESETS).map((k) => h("button", { class: "chip", onclick: () =>
+      setAdjustments(imaging.PRESETS[k], `preset: ${k} - ${PRESET_NOTES[k]}`) }, k)),
+    h("button", { class: "chip accent", onclick: () => {
+      if (!cropper) return;
+      preSuggest = { ...p.adjustments };
+      undoBtn.disabled = false;
+      const sample = cropSample(cropper.oriented(), cropper.getCrop(), 400);
+      shape.flatten(sample);
+      const { adjustments, reasons } = imaging.suggest(sample);
+      setAdjustments(adjustments, `suggested - ${reasons.join("; ")}`);
+    } }, "suggest for print"),
+    undoBtn);
+
+  const pct = (v) => (v ? `${v > 0 ? "+" : ""}${v}` : "0");
+  const buildSliders = () => {
+    const a = p.adjustments;
+    const slider = (label, key, min, max, fmt, scale = 100) =>
+      rangeField(label, Math.round(a[key] * scale), { min, max, fmt,
+        oninput: (v) => { a[key] = v / scale; adjusted(); } });
+    return h("div", {},
+      slider("brightness", "brightness", -60, 60, pct),
+      slider("contrast", "contrast", -60, 60, pct),
+      slider("saturation", "saturation", -100, 100, pct),
+      slider("denoise", "denoise", 0, 100, (v) => (v ? `${v}%` : "off")),
+      slider("sharpen", "sharpen", 0, 100, (v) => (v ? `${v}%` : "off")),
+      slider("pixelize", "pixelize", 0, 100,
+        (v) => (v ? `${Math.round(1 + v / 100 * 23)} px blocks` : "off")),
+      rangeField("decimate", a.decimate || 1, { min: 1, max: 32,
+        fmt: (v) => (v >= 2 ? `${v} colours` : "off"),
+        oninput: (v) => { a.decimate = v >= 2 ? v : 0; adjusted(); } }),
+      h("button", { class: "btn wide", style: "margin-top:8px",
+        onclick: () => setAdjustments(imaging.DEFAULT_ADJUSTMENTS, "adjustments reset") }, "reset adjustments"));
+  };
+  let sliders = buildSliders();
+  const adjustBlock = h("div", {},
+    head("painting"), presets, paintNote,
+    head("image"), sliders);
+
   screen.append(
-    pane("view", head("crop"), frame(null, cropHost),
+    pane("view", viewChips, h("div", { style: "margin-top:10px" }, frame(null, cropHost, resultHost)),
       h("div", { class: "row", style: "margin-top:12px" },
         h("button", { class: "btn grow", onclick: () => {
           p.rotate_deg = (p.rotate_deg + 270) % 360; // counter-clockwise
@@ -321,7 +444,7 @@ function renderPrep(screen, action) {
           cropper?.setOrientation(p.rotate_deg, p.flip_h);
         } }, "⇋ flip"),
         h("button", { class: "btn grow", onclick: () => cropper?.reset() }, "reset")),
-      h("div", { style: "margin-top:12px" }, aspectRow),
+      cropControls,
       readout),
     pane("ctrl",
       head("shape"),
@@ -336,12 +459,9 @@ function renderPrep(screen, action) {
         onchange: (v) => { p.physical_width_mm = v; updateReadout(p.crop); invalidate(); cropper?.refreshOverlay(); } }),
       h("p", { class: "meta" }, "A1 bed is 256 mm · A1 mini is 180 mm"),
 
-      head("adjustments"),
-      h("div", { class: "todo" },
-        h("b", {}, "brightness · contrast · saturation · denoise · sharpen"),
-        "Not on the phone yet - prep those on the Mac if a photo needs them. " +
-        "Crop, shape and size all carry through to the print.")),
+      adjustBlock),
   );
+  cropControls.append(h("div", { style: "margin-top:12px" }, aspectRow));
 
   action.append(
     h("button", { class: "btn ghost", onclick: () => picker.click() }, "new photo"),
@@ -372,8 +492,12 @@ async function commitPrep() {
       return;
     }
     shape.flatten(data);
-    ctx.putImageData(data, 0, 0);
-    app.prepped = { canvas: out, data, mask, w, h: hh };
+    // same order as the desktop: the outline is cut from the plain crop,
+    // then the painting adjustments run on the flattened image
+    const done = imaging.finish(data, p.adjustments);
+    const prepped = new ImageData(done.data, w, hh);
+    ctx.putImageData(prepped, 0, 0);
+    app.prepped = { canvas: out, data: prepped, mask, w, h: hh };
 
     const k = Math.min(1, SOLVE_PROXY / Math.max(w, hh));
     const pw = Math.max(1, Math.round(w * k)), ph = Math.max(1, Math.round(hh * k));

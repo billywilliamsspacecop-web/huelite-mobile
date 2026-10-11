@@ -206,6 +206,8 @@ export function createCropper(container, bitmap, { rotateDeg = 0, flipH = false,
      *  crop box, or null for no overlay. */
     setOverlay(fn) { painter = fn; repaint(); },
     refreshOverlay() { repaint(); },
+    /** The rotated/flipped source the crop is measured against. */
+    oriented() { return oriented; },
     getCrop() {
       return [rect.x, rect.y, rect.w, rect.h].map(Math.round);
     },
