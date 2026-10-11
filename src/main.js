@@ -657,7 +657,7 @@ function renderExport(screen, action) {
     filesBox.replaceChildren(...(lastFiles.length ? [head("files"),
       h("div", { class: "files" }, lastFiles.map((f) =>
         h("a", { class: "btn wide", href: f.url, download: f.name }, `⬇  ${f.name}`))),
-      h("p", { class: "meta" }, "tap to save again. open the .3mf in Bambu Handy or Studio.")] : []));
+      h("p", { class: "meta" }, "tap to save again. open the .3mf in Bambu Studio.")] : []));
   };
 
   const name = h("input", { class: "val wide-val", value: app.project.name, onchange: (e) => {
