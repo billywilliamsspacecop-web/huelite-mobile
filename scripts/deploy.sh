@@ -18,5 +18,6 @@ cd "$TMP"
 git init -q -b gh-pages
 git add -A
 git -c user.name="$NAME" -c user.email="$EMAIL" commit -q -m "Deploy $(date -u +%Y-%m-%dT%H:%MZ)"
-git push -q -f "$REMOTE" gh-pages
+# use the GitHub CLI's login for this one push (no global git config change)
+git -c credential.helper= -c credential.helper='!gh auth git-credential' push -q -f "$REMOTE" gh-pages
 echo "deployed to gh-pages"
