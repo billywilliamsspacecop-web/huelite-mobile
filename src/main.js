@@ -1108,3 +1108,11 @@ async function deliver(files) {
 }
 
 render();
+
+// Offline support: once the app has loaded over a real address, a service
+// worker keeps its files so it opens with no signal. Production builds only.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch((err) => console.warn("offline mode unavailable", err));
+  });
+}

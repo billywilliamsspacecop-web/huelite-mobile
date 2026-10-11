@@ -53,6 +53,17 @@ Compress a project folder, then "import a project (.zip)" on the phone.
 Saved projects live in the browser, per address: `http://192.168.x.x:5173`
 and `http://localhost:5173` each keep their own list.
 
+## Hosted copy (no laptop needed)
+
+`npm run deploy` builds the app and publishes it to the `gh-pages`
+branch, which GitHub Pages serves. The app is static, so nothing runs on a
+server and photos never leave the phone. Open the Pages address once on
+the phone; after that it works offline, and "Add to Home screen" installs
+it. A new deploy shows up the next time the app opens with signal.
+
+To take it down: repo Settings > Pages > unpublish, or make the repo
+private, or delete the repo.
+
 ## Run on a phone (same Wi-Fi as the Mac)
 
     npm install
