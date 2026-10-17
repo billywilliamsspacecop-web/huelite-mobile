@@ -64,8 +64,11 @@ self.addEventListener("fetch", (e) => {
 
 // Relative base so the built files load from Capacitor's local file server,
 // from a GitHub Pages sub-path, or from any static host.
+const BUILD = new Date().toISOString().slice(0, 16).replace("T", " ") + "Z";
+
 export default defineConfig({
   base: "./",
   build: { target: "es2020", outDir: "dist" },
+  define: { __BUILD__: JSON.stringify(BUILD) },
   plugins: [offlineWorker()],
 });

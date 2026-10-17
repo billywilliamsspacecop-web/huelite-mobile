@@ -23,6 +23,32 @@ Prep → Solve → Export all run on the phone, with no server.
 The project data mirrors the desktop `project.json` schema, so projects can
 move between the phone and the Mac later.
 
+## Layout
+
+Every screen is a preview pane plus a controls pane, and only the controls
+scroll, so the preview never scrolls away while you tune.
+
+| Screen | Layout |
+|---|---|
+| narrow / tall (phone, 2:3) | preview on top (40% of the height, `⤢` stretches it), controls below; two columns of controls when 560 px+ wide |
+| square-ish or landscape (unfolded Fold, 1:1, tablet) | side by side |
+| side by side and 780 px+ tall | two previews at once (crop + result, print + angle, top + angle) |
+| short (phone on its side) | slim header, actions and stage tabs share one row |
+
+`main.js` measures the window and sets `data-side` / `data-dual` /
+`data-short` on `<html>`; it re-lays out on fold, unfold and rotate, and
+never mid-typing (a soft keyboard shrinks the window).
+
+Touch: sliders (`src/ui.js`) only move when you grab the knob, so a finger
+scrolling past never changes a value; the `-` / `+` buttons step (hold to
+repeat). A scroll rail with arrows runs down the right edge of the controls.
+
+Colours: the lit preview is relative to a flat surface, so a flat area shows
+exactly its swatch colour (the earlier lighting ran about 23% bright). The
+`light` chip turns lighting off to see every colour flat. Tapping a swatch
+opens an in-app picker: exported colour next to "prints as", a palette from
+the photo, tap-the-photo, hue + saturation/value, hex.
+
 ## The engine
 
 `src/engine/` is a port of the desktop's `core/`:
@@ -59,7 +85,9 @@ and `http://localhost:5173` each keep their own list.
 branch, which GitHub Pages serves. The app is static, so nothing runs on a
 server and photos never leave the phone. Open the Pages address once on
 the phone; after that it works offline, and "Add to Home screen" installs
-it. A new deploy shows up the next time the app opens with signal.
+it. A new deploy shows up the next time the app opens with signal, as a
+"new version ready - reload" bar; the build time is at the bottom of the
+project list.
 
 To take it down: repo Settings > Pages > unpublish, or make the repo
 private, or delete the repo.

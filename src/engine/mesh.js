@@ -138,6 +138,13 @@ export function buildModel({ heights, w, h, mask, physicalW, layerH, baseLayers,
 // ---------------------------------------------------------------- shading
 const LIGHT = (() => { const l = [-0.5, -0.35, 0.8]; const n = Math.hypot(...l); return l.map((v) => v / n); })();
 
+// Lighting is relative to a flat surface: a flat area gets exactly its own
+// colour (factor 1.0), slopes facing the light a touch brighter, slopes
+// facing away darker. The old curve (0.55 + 0.85 * s) put flat areas at
+// 1.23x, so the preview ran about 23% brighter than the swatches and the
+// colours that actually export.
+const SHADE_GAIN = 0.55;
+
 /** np.gradient-style central differences, one-sided at the edges. */
 function shadeFactor(z, w, h, cell) {
   const out = new Float32Array(w * h);
@@ -150,7 +157,7 @@ function shadeFactor(z, w, h, cell) {
         : (z[i + w] - z[i - w]) / (2 * cell);
       const norm = Math.sqrt(gx * gx + gy * gy + 1);
       const s = (-gx * LIGHT[0] - gy * LIGHT[1] + LIGHT[2]) / norm;
-      out[i] = 0.55 + 0.85 * Math.min(1, Math.max(0, s));
+      out[i] = 1 + SHADE_GAIN * (Math.min(1, Math.max(0, s)) - LIGHT[2]);
     }
   }
   return out;
@@ -194,7 +201,7 @@ export function renderHeight({ heights, w, h, mask }) {
 /** ~30 degree view with real occlusion, as a canvas. */
 export function renderOblique({ heights, w, h, lut, mask, baseHex, layerH, baseMm, physicalW,
                                 targetWidth = 600, elevationDeg = 30, depthCompress = 0.65,
-                                maxCols = 200 }) {
+                                maxCols = 200, shaded = true }) {
   const f = Math.max(1, Math.round(w / maxCols));
   const g = downsampleMax(heights, w, h, f);
   const m = downsampleMask(mask, w, h, f);
@@ -235,7 +242,7 @@ export function renderOblique({ heights, w, h, lut, mask, baseHex, layerH, baseM
       if (y < runningMin) {
         const yc = Math.max(0, y);
         const col = z[i] < baseMm ? baseRgb : lut[Math.min(top, Math.round(g.a[i]))];
-        const k = shade[i];
+        const k = shaded ? shade[i] : 1;
         ctx.fillStyle = `rgb(${Math.min(255, col[0] * k) | 0},${Math.min(255, col[1] * k) | 0},${Math.min(255, col[2] * k) | 0})`;
         ctx.fillRect(xa, yc, xb - xa, runningMin - yc);
         runningMin = yc;

@@ -3,7 +3,7 @@
 
 const MIN_CROP_PX = 64;
 const CROP_PAD_PX = 18;        // keep in sync with .crop-wrap padding
-const MAX_HEIGHT_FRAC = 0.5;   // crop view never taller than half the screen
+const MAX_HEIGHT_FRAC = 0.4;   // fallback when the host has no height of its own yet
 
 export const ASPECTS = [
   { key: "free", label: "free", ratio: null },
@@ -75,8 +75,9 @@ export function createCropper(container, bitmap, { rotateDeg = 0, flipH = false,
   function draw() {
     const dpr = window.devicePixelRatio || 1;
     const pad = 2 * CROP_PAD_PX;
-    const availW = Math.max(100, (wrap.clientWidth || 300) - pad);
-    const availH = Math.max(160, window.innerHeight * MAX_HEIGHT_FRAC - pad);
+    // the pane the crop lives in decides how much room there is
+    const availW = Math.max(80, (wrap.clientWidth || 300) - pad);
+    const availH = Math.max(80, (wrap.clientHeight || window.innerHeight * MAX_HEIGHT_FRAC) - pad);
     const ratio = oriented.height / oriented.width;
     let cssW = availW, cssH = cssW * ratio;
     if (cssH > availH) { cssH = availH; cssW = cssH / ratio; } // tall photos: fit height
@@ -177,6 +178,8 @@ export function createCropper(container, bitmap, { rotateDeg = 0, flipH = false,
 
   const ro = new ResizeObserver(() => draw());
   ro.observe(wrap);
+  const onWindow = () => draw();
+  window.addEventListener("resize", onWindow);
 
   const api = {
     setAspect(ratio) {
@@ -223,7 +226,14 @@ export function createCropper(container, bitmap, { rotateDeg = 0, flipH = false,
       ctx.drawImage(oriented, x, y, w, h, 0, 0, out.width, out.height);
       return out;
     },
-    destroy() { clearTimeout(paintTimer); ro.disconnect(); container.innerHTML = ""; },
+    /** Re-measure after the layout around the crop changed. */
+    relayout() { draw(); },
+    destroy() {
+      clearTimeout(paintTimer);
+      ro.disconnect();
+      window.removeEventListener("resize", onWindow);
+      container.innerHTML = "";
+    },
   };
   draw();
   return api;

@@ -9,6 +9,9 @@ import * as imaging from "./engine/imaging.js";
 import * as store from "./store.js";
 import * as projectzip from "./engine/projectzip.js";
 import { uuid } from "./state.js";
+import { h } from "./dom.js";
+import { attachRail, colourSheet, slider } from "./ui.js";
+import { hexToRgb, toHex } from "./colour.js";
 
 const root = document.getElementById("app");
 const SOLVE_PROXY = 360;      // live solve resolution (long edge)
@@ -22,19 +25,12 @@ let exportOpts = { detail: "standard", plate: "A1", formats: { "3mf": true, stl:
 let lastFiles = [];           // [{ name, url }] from the last export
 let prepView = "crop";        // crop | result
 let preSuggest = null;        // adjustments before the last "suggest", for undo
+let solveShaded = true;       // lighting on the simulated print (off = flat swatch colours)
+let exportView = "top";       // top | angle, when the preview pane is too small for both
+let rail = null;              // scroll rail on the controls pane
+let currentSheet = null;      // open colour sheet, if any
 
 // ---------------------------------------------------------------- helpers
-const h = (tag, attrs = {}, ...kids) => {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-    else if (k === "class") el.className = v;
-    else if (v === true) el.setAttribute(k, "");
-    else if (v !== false && v != null) el.setAttribute(k, v);
-  }
-  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid);
-  return el;
-};
 const head = (text) => h("div", { class: "section-head" }, `[ ${text} ]`);
 // Desktop view panel: corner marks + optional caption.
 const frame = (caption, ...kids) => h("div", { class: "frame" },
@@ -42,7 +38,23 @@ const frame = (caption, ...kids) => h("div", { class: "frame" },
   caption ? h("div", { class: "frame-caption" }, caption) : null, ...kids);
 const kv = (pairs) => h("dl", { class: "kv" },
   pairs.flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]));
-const pane = (cls, ...kids) => h("div", { class: `pane ${cls}` }, ...kids);
+/** A screen is a preview pane plus a controls pane. Controls are split at
+ *  each [ heading ] into groups, so a wide pane can lay them out in columns
+ *  without tearing a heading away from its controls. */
+function pane(cls, ...kids) {
+  const flat = kids.flat(Infinity).filter((k) => k != null && k !== false);
+  if (!cls.split(" ").includes("ctrl")) return h("div", { class: `pane ${cls}` }, ...flat);
+  const inner = h("div", { class: "ctrl-inner" });
+  let group = null;
+  for (const k of flat) {
+    if (!group || (k instanceof Element && k.classList.contains("section-head"))) {
+      group = h("div", { class: "group" });
+      inner.append(group);
+    }
+    group.append(k);
+  }
+  return h("div", { class: `pane ${cls}` }, inner);
+}
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
 
 function canvasOf(imageData) {
@@ -109,13 +121,9 @@ function numField(labelText, value, { step, min, max, fmt = (v) => String(v), on
 
 function rangeField(labelText, value, { min, max, step = 1, fmt, oninput }) {
   const out = h("span", { class: "range-val" }, fmt(value));
-  return h("label", { class: "range" },
-    h("span", { class: "range-head" }, h("span", {}, labelText), out),
-    h("input", { type: "range", min, max, step, value: String(value), oninput: (e) => {
-      const v = parseFloat(e.target.value);
-      out.textContent = fmt(v);
-      oninput(v);
-    } }));
+  return h("div", { class: "range" },
+    h("div", { class: "range-head" }, h("span", {}, labelText), out),
+    slider({ min, max, step, value, onInput: (v) => { out.textContent = fmt(v); oninput(v); } }));
 }
 
 const STAGE_SUB = {
@@ -204,7 +212,7 @@ async function persistNow(thumb = undefined) {
 }
 
 // Any edit anywhere in the app schedules a save; leaving the app saves now.
-for (const ev of ["input", "change", "click"]) root.addEventListener(ev, persistSoon);
+for (const ev of ["input", "change", "click", "pointerup"]) root.addEventListener(ev, persistSoon);
 document.addEventListener("visibilitychange", () => { if (document.hidden) persistNow(); });
 
 /** 256px square PNG for the project list. */
@@ -350,38 +358,88 @@ async function closeProject() {
   go("prep");
 }
 
+// ---------------------------------------------------------------- layout
+/** Stacked (preview over controls) on narrow/tall screens; side by side when
+ *  the screen is square-ish or landscape; two previews at once when there is
+ *  height to spare; a slim frame when the screen is short (phone on its side). */
+const layout = { side: false, dual: false, short: false };
+
+function measureLayout() {
+  const w = window.innerWidth, hh = window.innerHeight, ratio = w / Math.max(1, hh);
+  const side = w >= 560 && ratio >= 0.85;
+  return { side, dual: side && hh >= 780, short: hh < 520 };
+}
+
+function applyLayout(next) {
+  Object.assign(layout, next);
+  const el = document.documentElement;
+  el.dataset.side = layout.side ? "1" : "";
+  el.dataset.dual = layout.dual ? "1" : "";
+  el.dataset.short = layout.short ? "1" : "";
+}
+
+let layoutTimer = 0;
+function onResize() {
+  clearTimeout(layoutTimer);
+  layoutTimer = setTimeout(() => {
+    // a soft keyboard can shrink the window; never rebuild a screen mid-typing
+    const a = document.activeElement;
+    if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA")) return;
+    const next = measureLayout();
+    const rebuild = next.side !== layout.side || next.dual !== layout.dual || next.short !== layout.short;
+    const keep = root.querySelector(".pane.ctrl")?.scrollTop || 0;
+    applyLayout(next);
+    if (rebuild) {
+      render();
+      const c = root.querySelector(".pane.ctrl");
+      if (c) c.scrollTop = keep;
+    }
+    cropper?.relayout();
+    rail?.update();
+  }, 150);
+}
+window.addEventListener("resize", onResize);
+window.addEventListener("orientationchange", onResize);
+applyLayout(measureLayout());
+
 // ---------------------------------------------------------------- shell
 function render() {
+  currentSheet?.close();
+  currentSheet = null;
   cropper?.destroy();
   cropper = null;
+  rail?.destroy();
+  rail = null;
   root.innerHTML = "";
   root.dataset.stage = app.stage;
+  document.documentElement.dataset.stage = app.stage;
 
   const home = !app.project;
   root.dataset.home = home ? "1" : "";
   const name = app.project?.name || "projects";
   const n = STAGES.indexOf(app.stage) + 1;
-  root.append(
-    h("header", { class: "top" },
-      h("div", { class: "top-row" },
-        h("h1", { class: "stage-title" }, home ? "HueLite" : `0${n} ${STAGE_LABELS[app.stage]}`),
-        app.project
-          ? h("button", { class: "brand link", onclick: closeProject }, "☰ projects")
-          : h("div", { class: "brand" }, "photo → layered print")),
-      home
-        ? h("div", { class: "top-sub" }, "saved on this phone")
-        : h("div", { class: "top-sub" },
-            h("span", { class: "proj", onclick: rename }, name),
-            h("span", { class: "dotsep" }, "·"),
-            STAGE_SUB[app.stage])),
-  );
+  const header = h("header", { class: "top" },
+    h("div", { class: "top-row" },
+      h("h1", { class: "stage-title" }, home ? "HueLite" : `0${n} ${STAGE_LABELS[app.stage]}`),
+      app.project
+        ? h("button", { class: "brand link", onclick: closeProject }, "☰ projects")
+        : h("div", { class: "brand" }, "photo → layered print")),
+    home
+      ? h("div", { class: "top-sub" }, "saved on this phone")
+      : h("div", { class: "top-sub" },
+          h("span", { class: "proj", onclick: rename }, name),
+          h("span", { class: "dotsep" }, "·"),
+          STAGE_SUB[app.stage]));
 
   const screen = h("main", { class: "screen" });
   const action = h("div", { class: "action" });
   ({ prep: renderPrep, solve: renderSolve, export: renderExport })[app.stage](screen, action);
-  root.append(screen);
-  if (action.childElementCount) root.append(action);
-  if (!home) root.append(renderStepper());
+  const dock = h("div", { class: "dock" }, action.childElementCount ? action : null,
+    home ? null : renderStepper());
+  root.append(header, h("div", { class: "body" }, screen), dock);
+
+  const ctrl = screen.querySelector(".pane.ctrl");
+  if (ctrl) rail = attachRail(ctrl, screen);
 }
 
 function renderStepper() {
@@ -404,7 +462,6 @@ function refreshStepper() {
 function go(stage) {
   app.stage = stage;
   render();
-  root.querySelector(".screen")?.scrollTo(0, 0);
 }
 
 function rename() {
@@ -456,7 +513,7 @@ function renderPrep(screen, action) {
   const resultHost = h("div", { class: "result-view" });
   let resultTimer = 0;
   const renderResult = () => {
-    if (!cropper || prepView !== "result") return;
+    if (!cropper || resultHost.hidden) return;
     const crop = cropper.getCrop();
     const id = cropSample(cropper.oriented(), crop, PREP_RESULT_PX);
     const m = shape.build(p.shape.mode, id, { tolerance: p.shape.tolerance,
@@ -500,19 +557,17 @@ function renderPrep(screen, action) {
 
   const viewChips = chipGroup([{ key: "crop", label: "crop" }, { key: "result", label: "result" }],
     prepView, (k) => showView(k));
-  const cropControls = h("div");
   function showView(k) {
     prepView = k;
-    cropHost.hidden = k !== "crop";
-    cropControls.hidden = k !== "crop";
-    resultHost.hidden = k !== "result";
+    cropHost.hidden = !layout.dual && k !== "crop";
+    resultHost.hidden = !layout.dual && k !== "result";
     viewChips.querySelectorAll(".chip").forEach((c, i) => c.classList.toggle("on", (i === 0) === (k === "crop")));
-    if (k === "result") renderResult();
+    if (!resultHost.hidden) renderResult();
   }
   /** an adjustment moved: show its effect */
   const adjusted = () => {
     invalidate();
-    if (prepView !== "result") showView("result"); else queueResult();
+    if (!layout.dual && prepView !== "result") showView("result"); else queueResult();
   };
 
   const aspectChips = () => chipGroup(ASPECTS.map((a) => ({ key: a.key, label: a.label })), aspectKey,
@@ -604,13 +659,16 @@ function renderPrep(screen, action) {
         onclick: () => setAdjustments(imaging.DEFAULT_ADJUSTMENTS, "adjustments reset") }, "reset adjustments"));
   };
   let sliders = buildSliders();
-  const adjustBlock = h("div", {},
-    head("painting"), presets, paintNote,
-    head("image"), sliders);
+  const adjustBlock = [head("painting"), presets, paintNote, head("image"), sliders];
 
   screen.append(
-    pane("view", viewChips, h("div", { style: "margin-top:10px" }, frame(null, cropHost, resultHost)),
-      h("div", { class: "row", style: "margin-top:12px" },
+    layout.dual
+      ? pane("view", frame("crop", cropHost), frame("result", resultHost))
+      : pane("view", h("div", { class: "view-bar" }, viewChips, bigButton()),
+          frame(null, cropHost, resultHost)),
+    pane("ctrl",
+      head("crop"),
+      h("div", { class: "row" },
         h("button", { class: "btn grow", onclick: () => {
           p.rotate_deg = (p.rotate_deg + 270) % 360; // counter-clockwise
           cropper?.setOrientation(p.rotate_deg, p.flip_h);
@@ -620,12 +678,12 @@ function renderPrep(screen, action) {
           cropper?.setOrientation(p.rotate_deg, p.flip_h);
         } }, "⇋ flip"),
         h("button", { class: "btn grow", onclick: () => cropper?.reset() }, "reset")),
-      cropControls,
-      readout),
-    pane("ctrl",
+      h("div", { class: "gap-top" }, aspectRow),
+      readout,
+
       head("shape"),
       shapeChips,
-      h("div", { style: "margin-top:10px" }, tolerance),
+      h("div", { class: "gap-top" }, tolerance),
       shapeNote,
       !app.sourceHasAlpha && h("p", { class: "meta" },
         "tip: a PNG with a transparent background prints as exactly that outline."),
@@ -637,7 +695,6 @@ function renderPrep(screen, action) {
 
       adjustBlock),
   );
-  cropControls.append(h("div", { style: "margin-top:12px" }, aspectRow));
 
   action.append(
     h("button", { class: "btn ghost", onclick: () => picker.click() }, "new photo"),
@@ -645,19 +702,29 @@ function renderPrep(screen, action) {
   );
 }
 
+/** Stacked layouts give the preview 40% of the screen; this stretches it. */
+function bigButton() {
+  const el = document.documentElement;
+  return h("button", { class: "big-btn", type: "button", "aria-label": "bigger or smaller preview",
+    title: "bigger / smaller preview", onclick: () => {
+      el.dataset.big = el.dataset.big === "1" ? "" : "1";
+      requestAnimationFrame(() => { cropper?.relayout(); rail?.update(); });
+    } }, "⤢");
+}
+
 function renderHome(screen) {
   const list = h("div", { class: "projects" }, h("p", { class: "meta" }, "loading projects…"));
   screen.append(
-    pane("view", h("div", { class: "pick" },
-      frame(null, h("button", { class: "drop drop-home", onclick: () => picker.click() },
-        h("b", {}, "+ new from a photo"),
-        h("span", {}, "library or camera · PNG cut-outs keep their shape"))),
-      h("p", { class: "meta" }, "turns it into a layered, multi-filament print for the A1."))),
+    pane("view", frame(null, h("button", { class: "drop", onclick: () => picker.click() },
+      h("b", {}, "+ new from a photo"),
+      h("span", {}, "library or camera · PNG cut-outs keep their shape"),
+      h("span", {}, "turns it into a layered, multi-filament print for the A1")))),
     pane("ctrl", head("projects"), list,
-      h("button", { class: "btn wide", style: "margin-top:12px", onclick: () => zipPicker.click() },
+      h("button", { class: "btn wide gap-top", onclick: () => zipPicker.click() },
         "import a project (.zip)"),
       h("p", { class: "meta" }, "zip a project folder on the Mac (Finder › Compress) and open it here, " +
-        "or save one from here and unzip it into Documents/HueLite/projects on the Mac.")));
+        "or save one from here and unzip it into Documents/HueLite/projects on the Mac."),
+      h("p", { class: "stamp" }, `build ${__BUILD__}`)));
 
   store.listProjects().then((recs) => {
     if (!recs.length) {
@@ -790,27 +857,35 @@ function renderSolve(screen, action) {
     if (app.project.status.solve === COMPLETE) { setStatus("solve", PENDING); refreshStepper(); }
   };
 
-  const draw = () => {
-    if (!live) return;
+  /** One preview canvas for the current settings. */
+  const renderView = (kind) => {
     const { lh, baseLayers, mm } = solveSettings();
     const { proxy } = app;
     const baseMm = baseLayers * lh;
     let el;
-    if (solveView === "source") {
+    if (kind === "source") {
       const id = new ImageData(new Uint8ClampedArray(proxy.data.data), proxy.w, proxy.h);
       if (proxy.mask) for (let i = 0; i < proxy.mask.length; i++) if (!proxy.mask[i]) id.data.set([17, 17, 16, 255], i * 4);
       el = canvasOf(id);
-    } else if (solveView === "height") {
+    } else if (kind === "height") {
       el = canvasOf(mesh.renderHeight({ heights: live.heights, w: proxy.w, h: proxy.h, mask: proxy.mask }));
-    } else if (solveView === "oblique") {
+    } else if (kind === "oblique") {
       el = mesh.renderOblique({ heights: live.heights, w: proxy.w, h: proxy.h, lut: live.lut, mask: proxy.mask,
-        baseHex: s.filaments[0].hex, layerH: lh, baseMm, physicalW: mm, targetWidth: 640, maxCols: 180 });
+        baseHex: s.filaments[0].hex, layerH: lh, baseMm, physicalW: mm, targetWidth: 640, maxCols: 180,
+        shaded: solveShaded });
     } else {
       el = canvasOf(mesh.renderTop({ heights: live.heights, w: proxy.w, h: proxy.h, lut: live.lut,
-        mask: proxy.mask, layerH: lh, baseMm, cellMm: mm / proxy.w }));
+        mask: proxy.mask, layerH: lh, baseMm, cellMm: mm / proxy.w, shaded: solveShaded }));
     }
     el.className = "preview-out";
-    view.replaceChildren(el);
+    return el;
+  };
+  const draw = () => {
+    if (!live) return;
+    // with room to spare, show the angle view beside whatever is selected
+    const els = [renderView(solveView)];
+    if (layout.dual) els.push(renderView(solveView === "oblique" ? "sim" : "oblique"));
+    view.replaceChildren(...els);
   };
 
   const recompute = () => {
@@ -837,19 +912,84 @@ function renderSolve(screen, action) {
   const queue = () => { invalidate(); clearTimeout(solveTimer); solveTimer = setTimeout(recompute, 150); };
 
   const viewChips = chipGroup([
-    { key: "sim", label: "simulated print" }, { key: "oblique", label: "~30° angle" },
-    { key: "height", label: "height" }, { key: "source", label: "source" },
+    { key: "sim", label: "print" }, { key: "oblique", label: "angle" },
+    { key: "height", label: "height" }, { key: "source", label: "photo" },
   ], solveView, (k) => { solveView = k; draw(); });
+  const lightChip = h("button", { class: `chip${solveShaded ? " on" : ""}`, type: "button",
+    title: "Lighting on the preview. Off shows every colour flat, exactly as chosen.",
+    onclick: () => { solveShaded = !solveShaded; lightChip.classList.toggle("on", solveShaded); draw(); } },
+    "light");
+
+  /** What band i really prints as if it were `hex`: the colour at the top of
+   *  its layers in the solved stack, or null if it has none. */
+  const printedAs = (i, hex) => {
+    const fils = s.filaments.map((f, k) => (k === i ? { ...f, hex } : f));
+    if (!(fils[i].band_layers | 0)) return null;
+    const { lut } = solve.buildLut(fils, s.layer_height_mm, s.band_mode || "solid");
+    const top = fils.slice(0, i + 1).reduce((n, f) => n + (f.band_layers | 0), 0);
+    return solve.rgbToHex(lut[Math.min(lut.length - 1, top)].map(Math.round));
+  };
+
+  /** The prepped photo as a tap-to-pick surface for the colour sheet. */
+  const photoPicker = () => {
+    const { w, h: hh, data, mask } = app.prepped;
+    const k = Math.min(1, 640 / Math.max(w, hh));
+    const cw = Math.max(1, Math.round(w * k)), ch = Math.max(1, Math.round(hh * k));
+    const c = document.createElement("canvas");
+    c.width = cw; c.height = ch;
+    const src = canvasOf(data);
+    const ctx = c.getContext("2d");
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(src, 0, 0, cw, ch);
+    if (mask) {
+      const shown = ctx.getImageData(0, 0, cw, ch);
+      const small = shape.resize(mask, w, hh, cw, ch);
+      ctx.putImageData(checkered(small, cw, ch, shown), 0, 0);
+    }
+    return {
+      canvas: c,
+      // average a small neighbourhood so one noisy pixel doesn't pick the colour
+      sample(nx, ny) {
+        const cx = Math.min(w - 1, Math.floor(nx * w)), cy = Math.min(hh - 1, Math.floor(ny * hh));
+        let r = 0, g = 0, b = 0, n = 0;
+        for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+          const x = cx + dx, y = cy + dy;
+          if (x < 0 || y < 0 || x >= w || y >= hh) continue;
+          const pi = y * w + x;
+          if (mask && !mask[pi]) continue;
+          r += data.data[pi * 4]; g += data.data[pi * 4 + 1]; b += data.data[pi * 4 + 2]; n++;
+        }
+        return n ? toHex([r / n, g / n, b / n]) : null;
+      },
+    };
+  };
+
+  const openColour = (f, i, btn) => {
+    currentSheet?.close();
+    currentSheet = colourSheet({
+      title: `slot ${f.slot} colour`,
+      hex: f.hex,
+      printedAs: (hex) => printedAs(i, hex),
+      palette: solve.importColours(app.prepped.data.data, app.prepped.mask, 12),
+      photo: photoPicker(),
+      onChange: (hex) => {
+        f.hex = hex; f.name = "";
+        btn.style.background = hex;
+        btn.setAttribute("aria-label", `slot ${f.slot} colour ${hex}`);
+        queue();
+      },
+      onClose: () => { currentSheet = null; },
+    });
+  };
 
   // filaments
   const filTable = () => h("div", { class: "fil-table" },
     h("span"), h("span", { class: "th" }, "colour"), h("span", { class: "th" }, "TD mm"),
     h("span", { class: "th" }, "layers"),
-    s.filaments.flatMap((f) => [
+    s.filaments.flatMap((f, i) => [
       h("span", { class: "idx" }, String(f.slot)),
-      h("input", { class: "sw", type: "color", value: f.hex.toLowerCase(), oninput: (e) => {
-        f.hex = e.target.value.toUpperCase(); f.name = ""; queue();
-      } }),
+      h("button", { class: "sw", type: "button", style: `background:${f.hex}`,
+        "aria-label": `slot ${f.slot} colour ${f.hex}`, onclick: (e) => openColour(f, i, e.currentTarget) }),
       h("input", { class: "val", type: "number", inputmode: "decimal", step: "0.05", min: "0.05", max: "6",
         value: Number(f.td_mm).toFixed(2), onchange: (e) => {
           const v = Math.min(6, Math.max(0.05, parseFloat(e.target.value) || f.td_mm));
@@ -868,18 +1008,21 @@ function renderSolve(screen, action) {
   const frameSlot = numField("frame colour (slot)", s.border.frame_slot ?? 1, { step: "1", min: 1, max: s.filaments.length,
     onchange: (v) => { s.border.frame_slot = Math.round(v); queue(); } });
 
+  // with room beside the preview the summary sits under it; otherwise it
+  // leads the controls
+  const readoutBeside = layout.side && !layout.short;   // a short screen needs every pixel for the preview
+  const summary = [ramp, h("p", { class: "meta" }, "reachable tones, bottom layer to top")];
   screen.append(
     pane("view",
-      h("div", { style: "margin-top:8px" }, viewChips),
-      h("div", { style: "margin-top:10px" }, frame(null, view)),
-      ramp,
-      h("p", { class: "meta", style: "margin-top:4px" }, "reachable tones, bottom layer to top"),
-      readout),
+      h("div", { class: "view-bar" }, viewChips, lightChip, layout.side ? null : bigButton()),
+      frame(null, view),
+      h("div", { class: "below-view" }, summary, readoutBeside ? readout : null)),
     pane("ctrl",
+      readoutBeside ? null : [head("summary"), readout],
       head("filaments"),
-      h("p", { class: "meta", style: "margin:-4px 0 8px" }, "slot 1 prints lowest · tap a swatch to change it"),
+      h("p", { class: "meta" }, "slot 1 prints lowest · tap a swatch to choose its colour"),
       filEl,
-      h("button", { class: "btn wide", style: "margin-top:10px", onclick: () => {
+      h("button", { class: "btn wide gap-top", onclick: () => {
         importColours(); const fresh = filTable(); filEl.replaceWith(fresh); filEl = fresh; queue();
       } }, "import colours from prep"),
 
@@ -893,7 +1036,7 @@ function renderSolve(screen, action) {
       head("colour"),
       chipGroup([{ key: "solid", label: "solid bands" }, { key: "blend", label: "translucent blend" }],
         s.band_mode || "solid", (k) => { s.band_mode = k; queue(); }),
-      h("div", { style: "margin-top:10px" },
+      h("div", { class: "gap-top" },
         chipGroup([{ key: "bayer8", label: "dither on" }, { key: "none", label: "dither off" }],
           s.dither === "none" ? "none" : "bayer8", (k) => { s.dither = k; queue(); })),
       rangeField("dither amount", Math.round((s.dither_amount ?? 1) * 100), { min: 0, max: 200,
@@ -905,7 +1048,7 @@ function renderSolve(screen, action) {
       head("border"),
       chipGroup([{ key: "raised", label: "raised rim" }, { key: "flush", label: "flush" }, { key: "none", label: "none" }],
         s.border.mode || "raised", (k) => { s.border.mode = k; s.border.enabled = k !== "none"; queue(); }),
-      app.prepped.mask && h("p", { class: "meta", style: "margin-top:6px" }, "the rim follows the outline"),
+      app.prepped.mask && h("p", { class: "meta" }, "the rim follows the outline"),
       borderWidth, frameSlot),
   );
 
@@ -1013,12 +1156,19 @@ function renderExport(screen, action) {
     if (v) app.project.name = v;
   } });
 
+  // both previews when there is height for them, otherwise one at a time
+  const showExport = () => {
+    top.hidden = !layout.dual && exportView !== "top";
+    oblique.hidden = !layout.dual && exportView !== "angle";
+  };
+  const exportChips = chipGroup([{ key: "top", label: "top down" }, { key: "angle", label: "angle" }],
+    exportView, (k) => { exportView = k; showExport(); });
+  showExport();
   screen.append(
-    pane("view",
-      head("views"),
-      frame("top down", top),
-      h("div", { style: "margin-top:10px" }, frame("~30° from the plate", oblique)),
-      stats),
+    layout.dual
+      ? pane("view", frame("top down", top), frame("~30° from the plate", oblique), h("div", { class: "below-view" }, stats))
+      : pane("view", h("div", { class: "view-bar" }, exportChips, bigButton()),
+          frame(null, top, oblique), h("div", { class: "below-view" }, stats)),
     pane("ctrl",
       head("filament slots"),
       h("div", { class: "slots" }, s.filaments.map((f, i) =>
@@ -1109,10 +1259,31 @@ async function deliver(files) {
 
 render();
 
-// Offline support: once the app has loaded over a real address, a service
-// worker keeps its files so it opens with no signal. Production builds only.
+// ---------------------------------------------------------------- updates
+// Offline support keeps the app's files on the phone. When a newer build has
+// been published, the service worker fetches it in the background and this
+// bar offers the switch, so a deploy reaches an open app without hunting for
+// a refresh. Production builds only.
+function showUpdateBar() {
+  if (document.querySelector(".update-bar")) return;
+  document.body.append(h("div", { class: "update-bar" },
+    h("span", {}, "a new version of HueLite is ready"),
+    h("button", { type: "button", onclick: () => location.reload() }, "reload")));
+}
+
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  // The first time a worker takes over (first install) is not an update; any
+  // change of worker after that is.
+  let controlled = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (controlled) showUpdateBar();
+    controlled = true;
+  });
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./sw.js").catch((err) => console.warn("offline mode unavailable", err));
+    navigator.serviceWorker.register("./sw.js").then((reg) => {
+      const check = () => reg.update().catch(() => {});
+      document.addEventListener("visibilitychange", () => { if (!document.hidden) check(); });
+      setInterval(check, 30 * 60 * 1000);
+    }).catch((err) => console.warn("offline mode unavailable", err));
   });
 }
