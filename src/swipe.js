@@ -26,10 +26,10 @@ export function attachSwipe(host, { drag, canGo, onGo, onBlocked }) {
     drag.style.opacity = "";
   };
   const springBack = () => {
-    settle(320, "cubic-bezier(.2, 1.3, .4, 1)");
+    settle(420, "cubic-bezier(.2, 1.3, .4, 1)");
     drag.style.transform = "translate3d(0, 0, 0)";
     drag.style.opacity = "1";
-    setTimeout(clear, 340);
+    setTimeout(clear, 440);
   };
 
   const down = (e) => {
@@ -69,10 +69,10 @@ export function attachSwipe(host, { drag, canGo, onGo, onBlocked }) {
     const far = Math.abs(dx) > Math.min(120, w * 0.26);
     if (!cancelled && st.ok && Math.sign(dx) === -st.dir && (far || fast)) {
       if (reduced()) { clear(); onGo(st.dir); return; }
-      settle(190, "cubic-bezier(.5, 0, 1, 1)");
+      settle(240, "cubic-bezier(.5, 0, 1, 1)");
       drag.style.transform = `translate3d(${st.dir > 0 ? "-100%" : "100%"}, 0, 0)`;
       drag.style.opacity = "0";
-      setTimeout(() => { clear(); onGo(st.dir); }, 190);
+      setTimeout(() => { clear(); onGo(st.dir); }, 240);
       return;
     }
     if (!cancelled && !st.ok && Math.abs(dx) > 50) onBlocked?.(st.dir);

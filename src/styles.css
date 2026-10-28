@@ -181,27 +181,27 @@ label.field { display: flex; justify-content: space-between; align-items: center
 .range.key .range-head { font-size: 16px; }
 .range.key .range-val { color: var(--accent); font-weight: 700; }
 .slider-row { display: flex; align-items: center; gap: 4px; }
-.slider-step { width: 56px; height: 56px; flex: none; background: var(--well); border: 1px solid var(--line);
+.slider-step { width: 52px; height: 52px; flex: none; background: var(--well); border: 1px solid var(--line);
   color: var(--text); font-size: 26px; line-height: 1; touch-action: manipulation; }
 .slider-step:active { border-color: var(--accent); background: var(--panel); }
-.slider { position: relative; flex: 1; height: 68px; margin: 0 30px; }
-.slider-track { position: absolute; left: -6px; right: -6px; top: 50%; height: 16px; transform: translateY(-50%);
+.slider { position: relative; flex: 1; height: 60px; margin: 0 26px; }
+.slider-track { position: absolute; left: -6px; right: -6px; top: 50%; height: 14px; transform: translateY(-50%);
   background: var(--line); border: 1px solid #000; overflow: hidden; border-radius: 7px !important; }
 .slider-track.plain { height: 18px; border-radius: 9px !important; }
 .slider-fill { height: 100%; background: var(--accent); opacity: .85; }
 .slider-track.plain .slider-fill { display: none; }
-.slider-knob { position: absolute; top: 0; width: 80px; height: 68px; margin-left: -40px;
+.slider-knob { position: absolute; top: 0; width: 68px; height: 60px; margin-left: -34px;
   display: flex; align-items: center; justify-content: center; touch-action: none; outline: none; cursor: grab; }
-.slider-knob i { position: relative; display: block; width: 44px; height: 60px; background: var(--text);
-  border: 2px solid var(--accent); border-radius: 10px !important;
+.slider-knob i { position: relative; display: block; width: 34px; height: 46px; background: var(--text);
+  border: 2px solid var(--accent); border-radius: 6px !important;
   box-shadow: 0 2px 6px rgba(0, 0, 0, .7), inset 0 -3px 0 rgba(0, 0, 0, .18); }
 /* three grip ridges */
-.slider-knob i::before { content: ""; position: absolute; left: 12px; right: 12px; top: 50%; height: 20px;
+.slider-knob i::before { content: ""; position: absolute; left: 9px; right: 9px; top: 50%; height: 14px;
   transform: translateY(-50%);
   background: repeating-linear-gradient(90deg, #6a6a60 0 3px, transparent 3px 8px); opacity: .85; }
 .slider-knob:focus-visible i, .slider-knob.held i { background: var(--accent); border-color: var(--text); }
 .slider-knob.held i::before { background: repeating-linear-gradient(90deg, rgba(0,0,0,.45) 0 3px, transparent 3px 8px); }
-.slider-bubble { position: absolute; left: 50%; bottom: 66px; transform: translateX(-50%); display: none;
+.slider-bubble { position: absolute; left: 50%; bottom: 54px; transform: translateX(-50%); display: none;
   padding: 7px 12px; background: var(--text); color: #111; font: 800 15px var(--mono); white-space: nowrap;
   border: 2px solid var(--accent); box-shadow: 0 3px 10px rgba(0, 0, 0, .6); pointer-events: none; z-index: 3; }
 .slider-knob.held .slider-bubble { display: block; }
@@ -211,7 +211,7 @@ label.field { display: flex; justify-content: space-between; align-items: center
    dragging the grip pins it open (data-tucked on the rail, data-rail="open"
    on the screen). ---- */
 .rail { position: absolute; right: 2px; width: 46px; z-index: 5; display: flex; flex-direction: column;
-  gap: 5px; touch-action: none; transition: transform .34s var(--ease-out); }
+  gap: 5px; touch-action: none; transition: transform .46s var(--ease-out); }
 .rail[data-tucked="1"] { transform: translateX(calc(100% - 4px)); pointer-events: none; }
 .rail[data-tucked="1"] .rail-tab { pointer-events: auto; }
 .rail-tab { position: absolute; left: -26px; top: 50%; width: 26px; height: 84px; margin-top: -42px;
@@ -427,31 +427,31 @@ html[data-side="1"] .sheet { left: auto; top: 0; max-height: none; width: min(44
 
 /* ---- a stage comes in: the screen slides from the side it was reached from,
    trailing a four-stripe edge (filament layers seen from the side) ---- */
-#app[data-enter="fwd"] .screen { animation: slide-fwd .42s var(--ease-out) backwards; }
-#app[data-enter="back"] .screen { animation: slide-back .42s var(--ease-out) backwards; }
-#app[data-enter="rise"] .screen { animation: rise .45s var(--ease-out) backwards; }
+#app[data-enter="fwd"] .screen { animation: slide-fwd .58s var(--ease-out) backwards; }
+#app[data-enter="back"] .screen { animation: slide-back .58s var(--ease-out) backwards; }
+#app[data-enter="rise"] .screen { animation: rise .62s var(--ease-out) backwards; }
 #app[data-enter="fwd"] .screen::before, #app[data-enter="back"] .screen::before {
   content: ""; position: absolute; top: 0; bottom: 0; width: 12px; z-index: 6; pointer-events: none;
   background: linear-gradient(90deg, var(--layer-1) 0 25%, var(--layer-2) 25% 50%, var(--layer-3) 50% 75%, var(--layer-4) 75%);
-  animation: edge-fade .62s ease-out forwards; }
+  animation: edge-fade .9s ease-out forwards; }
 #app[data-enter="fwd"] .screen::before { left: 0; }
 #app[data-enter="back"] .screen::before { right: 0; }
 .screen.dragging { will-change: transform, opacity; }
 
 /* header and tabs */
-#app[data-enter] .stage-title { animation: title-in .6s var(--ease-out) backwards; }
-#app[data-enter] .top-sub { animation: sub-in .5s .12s var(--ease-out) backwards; }
-#app[data-enter] .step.active { animation: step-pop .42s .08s var(--ease-out) backwards; }
+#app[data-enter] .stage-title { animation: title-in .85s var(--ease-out) backwards; }
+#app[data-enter] .top-sub { animation: sub-in .7s .16s var(--ease-out) backwards; }
+#app[data-enter] .step.active { animation: step-pop .6s .1s var(--ease-out) backwards; }
 
 /* the controls arrive one group at a time; previews fade up, corner marks close in */
-#app[data-enter] .ctrl-inner > .group { animation: group-in .5s var(--ease-out) backwards;
-  animation-delay: calc(var(--i, 0) * 55ms + 140ms); }
-#app[data-enter] .pane.view .frame > :not(i) { animation: fade-in .55s .18s ease-out backwards; }
-#app[data-enter] .frame > i { animation: corner-in .55s .1s var(--ease-out) backwards; }
-#app[data-enter] .action .btn { animation: pop-in .4s .2s var(--ease-out) backwards; }
-#app[data-enter] .action .btn.primary { animation-delay: .28s; }
-#app[data-enter] .project { animation: group-in .45s var(--ease-out) backwards;
-  animation-delay: calc(var(--i, 0) * 60ms + 120ms); }
+#app[data-enter] .ctrl-inner > .group { animation: group-in .72s var(--ease-out) backwards;
+  animation-delay: calc(var(--i, 0) * 75ms + 180ms); }
+#app[data-enter] .pane.view .frame > :not(i) { animation: fade-in .8s .22s ease-out backwards; }
+#app[data-enter] .frame > i { animation: corner-in .8s .14s var(--ease-out) backwards; }
+#app[data-enter] .action .btn { animation: pop-in .56s .26s var(--ease-out) backwards; }
+#app[data-enter] .action .btn.primary { animation-delay: .36s; }
+#app[data-enter] .project { animation: group-in .62s var(--ease-out) backwards;
+  animation-delay: calc(var(--i, 0) * 80ms + 150ms); }
 .projects > .project:nth-child(1) { --i: 0; } .projects > .project:nth-child(2) { --i: 1; }
 .projects > .project:nth-child(3) { --i: 2; } .projects > .project:nth-child(4) { --i: 3; }
 .projects > .project:nth-child(n+5) { --i: 4; }
@@ -460,23 +460,23 @@ html[data-side="1"] .sheet { left: auto; top: 0; max-height: none; width: min(44
 .btn.primary { position: relative; overflow: hidden; }
 #app[data-enter] .btn.primary::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 38%;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .34), transparent);
-  animation: shine .9s .55s ease-out backwards; pointer-events: none; }
+  animation: shine 1.25s .7s ease-out backwards; pointer-events: none; }
 
 /* switching between previews, and anything else that re-shows itself */
-.swap, .solve-view.swap > * { animation: fade-in .3s ease-out; }
+.swap, .solve-view.swap > * { animation: fade-in .42s ease-out; }
 
 /* a press you can feel */
 .btn, .chip, .step, .slider-step, .rail-btn, .project-open, .gl-btn, .pal-sw {
   transition: transform .09s ease-out, background-color .18s ease, border-color .18s ease, color .18s ease, filter .18s ease; }
 .btn:active, .chip:active, .step:active, .slider-step:active, .gl-btn:active { transform: scale(.96); }
-.chip.on { animation: pop-in .26s var(--ease-out); }
+.chip.on { animation: pop-in .36s var(--ease-out); }
 .slider-knob i { transition: background-color .15s ease, transform .12s ease-out, box-shadow .15s ease; }
-.slider-knob.held i { transform: scale(1.08); box-shadow: 0 4px 12px rgba(0, 0, 0, .75); }
+.slider-knob.held i { transform: scale(1.06); box-shadow: 0 4px 12px rgba(0, 0, 0, .75); }
 
 /* sheets and toasts */
-.sheet { animation: sheet-up .32s var(--ease-out); }
+.sheet { animation: sheet-up .44s var(--ease-out); }
 html[data-side="1"] .sheet { animation-name: sheet-side; }
-.update-bar { animation: pop-in .35s var(--ease-out); }
+.update-bar { animation: pop-in .48s var(--ease-out); }
 
 /* ---- loader: coloured layers stack up under a print head ---- */
 @keyframes layer-up {
@@ -489,17 +489,17 @@ html[data-side="1"] .sheet { animation-name: sheet-side; }
 @keyframes dot-blink { 0%, 100% { opacity: .2; } 35% { opacity: 1; } }
 .loader { display: flex; flex-direction: column; align-items: center; gap: 14px; min-width: 200px;
   padding: 22px 28px 16px; border: 1px solid var(--line); background: var(--well);
-  box-shadow: 0 10px 40px rgba(0, 0, 0, .55); animation: pop-in .3s var(--ease-out) backwards; }
+  box-shadow: 0 10px 40px rgba(0, 0, 0, .55); animation: pop-in .42s var(--ease-out) backwards; }
 .loader .stack { position: relative; width: 76px; height: 50px; display: flex; flex-direction: column-reverse;
   justify-content: flex-start; gap: 3px; }
 .loader .stack i { display: block; height: 9px; transform-origin: left center;
-  animation: layer-up 2s cubic-bezier(.3, .7, .2, 1) infinite backwards; }
+  animation: layer-up 2.5s cubic-bezier(.3, .7, .2, 1) infinite backwards; }
 .loader .stack i:nth-of-type(1) { background: var(--layer-1); animation-delay: 0s; }
-.loader .stack i:nth-of-type(2) { background: var(--layer-2); animation-delay: .2s; }
-.loader .stack i:nth-of-type(3) { background: var(--layer-3); animation-delay: .4s; }
-.loader .stack i:nth-of-type(4) { background: var(--layer-4); animation-delay: .6s; }
+.loader .stack i:nth-of-type(2) { background: var(--layer-2); animation-delay: .25s; }
+.loader .stack i:nth-of-type(3) { background: var(--layer-3); animation-delay: .5s; }
+.loader .stack i:nth-of-type(4) { background: var(--layer-4); animation-delay: .75s; }
 .loader .nozzle { position: absolute; top: -9px; left: 0; width: 12px; height: 8px; background: var(--text);
-  clip-path: polygon(0 0, 100% 0, 50% 100%); animation: head-sweep 2s ease-in-out infinite; }
+  clip-path: polygon(0 0, 100% 0, 50% 100%); animation: head-sweep 2.5s ease-in-out infinite; }
 .loader-label { font: 12px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--text); }
 .loader-label .dots i { font-style: normal; animation: dot-blink 1.2s infinite; }
 .loader-label .dots i:nth-child(2) { animation-delay: .18s; }
@@ -551,7 +551,7 @@ html[data-side="1"] .sheet { animation-name: sheet-side; }
 .card-tools button + button { border-left: 1px solid var(--line); }
 .card-tools button:active { color: var(--text); background: var(--panel); }
 .card-tools button:last-child:active { color: #e07a5f; }
-#app[data-enter] .card { animation: group-in .45s var(--ease-out) backwards; animation-delay: calc(var(--i, 0) * 50ms + 100ms); }
+#app[data-enter] .card { animation: group-in .62s var(--ease-out) backwards; animation-delay: calc(var(--i, 0) * 80ms + 150ms); }
 .album-grid > .card:nth-child(1) { --i: 0; } .album-grid > .card:nth-child(2) { --i: 1; }
 .album-grid > .card:nth-child(3) { --i: 2; } .album-grid > .card:nth-child(4) { --i: 3; }
 .album-grid > .card:nth-child(n+5) { --i: 4; }
