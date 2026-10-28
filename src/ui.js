@@ -10,17 +10,20 @@ import { h } from "./dom.js";
 import { COMMON, hexToRgb, hsvToRgb, isHex, rgbToHsv, toHex } from "./colour.js";
 
 // ---------------------------------------------------------------- slider
-/** Returns a row: [-] track with knob [+]. Only the knob drags; the -/+
+/** Returns a row: [-] track with handle [+]. Only the handle drags; the -/+
  *  buttons step (hold to repeat); a finger swiping across the track just
- *  scrolls the page. row.get() / row.set(v, emit = false) for code. */
-export function slider({ min, max, step = 1, value, onInput, track = "" }) {
+ *  scrolls the page. While the handle is held a bubble above it shows the
+ *  value (`fmt`), since a finger covers everything under it.
+ *  row.get() / row.set(v, emit = false) for code. */
+export function slider({ min, max, step = 1, value, onInput, track = "", fmt = String }) {
   const range = max - min;
   const stepBtn = Math.max(step, Math.round(range / 40));
   let v = Math.min(max, Math.max(min, value));
 
   const fill = h("div", { class: "slider-fill" });
+  const bubble = h("div", { class: "slider-bubble" });
   const knob = h("div", { class: "slider-knob", role: "slider", tabindex: "0",
-    "aria-valuemin": String(min), "aria-valuemax": String(max) }, h("i"));
+    "aria-valuemin": String(min), "aria-valuemax": String(max) }, h("i"), bubble);
   const bar = h("div", { class: `slider-track${track ? " plain" : ""}`, style: track ? `background:${track}` : null }, fill);
   const el = h("div", { class: "slider" }, bar, knob);
 
@@ -30,6 +33,7 @@ export function slider({ min, max, step = 1, value, onInput, track = "" }) {
     fill.style.width = `${pct}%`;
     knob.style.left = `${pct}%`;
     knob.setAttribute("aria-valuenow", String(v));
+    bubble.textContent = fmt(v);
   };
   const set = (nv, emit = true) => {
     nv = snap(nv);
@@ -41,7 +45,7 @@ export function slider({ min, max, step = 1, value, onInput, track = "" }) {
 
   let drag = null;
   knob.addEventListener("pointerdown", (e) => {
-    knob.setPointerCapture(e.pointerId);
+    try { knob.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
     drag = { id: e.pointerId, x: e.clientX, v };
     knob.classList.add("held");
     e.preventDefault();
@@ -86,28 +90,46 @@ export function slider({ min, max, step = 1, value, onInput, track = "" }) {
 
 // ---------------------------------------------------------------- scroll rail
 /** A scroll bar made for thumbs, down the right-hand edge of `scroller`:
- *  drag the thumb, tap the track to page, or tap the arrows. `host` must be
- *  position:relative and contain the scroller. */
+ *  drag the handle, tap the track to page, or tap the arrows. `host` must be
+ *  position:relative and contain the scroller.
+ *
+ *  It lives tucked into the screen edge, leaving a grip showing. Scrolling
+ *  slides it out for a moment; tapping the grip - or dragging it inward - pins
+ *  it open, and tapping or dragging it back tucks it away again. */
 export function attachRail(scroller, host) {
-  const thumb = h("div", { class: "rail-thumb" });
+  const thumb = h("div", { class: "rail-thumb" }, h("i"));
   const track = h("div", { class: "rail-track" }, thumb);
   const up = h("button", { class: "rail-btn", type: "button", "aria-label": "scroll up",
-    onclick: () => scroller.scrollBy({ top: -scroller.clientHeight * 0.6, behavior: "smooth" }) }, "▲");
+    onclick: () => { wake(); scroller.scrollBy({ top: -scroller.clientHeight * 0.6, behavior: "smooth" }); } }, "▲");
   const down = h("button", { class: "rail-btn", type: "button", "aria-label": "scroll down",
-    onclick: () => scroller.scrollBy({ top: scroller.clientHeight * 0.6, behavior: "smooth" }) }, "▼");
-  const rail = h("div", { class: "rail", hidden: true }, up, track, down);
+    onclick: () => { wake(); scroller.scrollBy({ top: scroller.clientHeight * 0.6, behavior: "smooth" }); } }, "▼");
+  const tab = h("div", { class: "rail-tab", role: "button", "aria-label": "show or hide the scroll bar" }, h("i"));
+  const rail = h("div", { class: "rail", hidden: true, "data-tucked": "1" }, tab, up, track, down);
   host.append(rail);
+
+  let pinned = false, peek = 0, holding = false;
+  const paintState = () => {
+    const open = pinned || holding || !!peek;
+    rail.dataset.tucked = open ? "" : "1";
+    host.dataset.rail = pinned ? "open" : "";
+  };
+  /** show it for a moment (scrolling, a tap on an arrow) */
+  function wake() {
+    clearTimeout(peek);
+    peek = setTimeout(() => { peek = 0; paintState(); }, 1500);
+    paintState();
+  }
 
   const geometry = () => {
     const sh = scroller.scrollHeight, ch = scroller.clientHeight;
     const th = track.clientHeight;
-    const tH = Math.min(th, Math.max(48, th * ch / Math.max(1, sh)));
+    const tH = Math.min(th, Math.max(68, th * ch / Math.max(1, sh)));
     return { sh, ch, th, tH, travel: Math.max(1, th - tH), span: Math.max(1, sh - ch) };
   };
 
   const update = () => {
     const sh = scroller.scrollHeight, ch = scroller.clientHeight;
-    const over = sh > ch + 2;
+    const over = sh > ch + 2 && ch > 40;
     rail.hidden = !over;
     if (!over) return;
     rail.style.top = `${scroller.offsetTop}px`;
@@ -119,25 +141,63 @@ export function attachRail(scroller, host) {
 
   let drag = null;
   thumb.addEventListener("pointerdown", (e) => {
-    thumb.setPointerCapture(e.pointerId);
+    try { thumb.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
     drag = { id: e.pointerId, y: e.clientY, top: scroller.scrollTop, g: geometry() };
+    holding = true;
     thumb.classList.add("held");
+    paintState();
     e.preventDefault();
   });
   thumb.addEventListener("pointermove", (e) => {
     if (!drag || e.pointerId !== drag.id) return;
     scroller.scrollTop = drag.top + ((e.clientY - drag.y) / drag.g.travel) * drag.g.span;
   });
-  const end = (e) => { if (drag && e.pointerId === drag.id) { drag = null; thumb.classList.remove("held"); } };
+  const end = (e) => {
+    if (drag && e.pointerId === drag.id) {
+      drag = null; holding = false; thumb.classList.remove("held");
+      wake();
+    }
+  };
   thumb.addEventListener("pointerup", end);
   thumb.addEventListener("pointercancel", end);
   track.addEventListener("pointerdown", (e) => {
     if (e.target !== track) return;
+    wake();
     const r = thumb.getBoundingClientRect();
     scroller.scrollBy({ top: (e.clientY < r.top ? -1 : 1) * scroller.clientHeight * 0.9, behavior: "smooth" });
   });
 
-  scroller.addEventListener("scroll", update, { passive: true });
+  // the grip: tap toggles; drag inward pins open, drag outward tucks away
+  let grip = null;
+  tab.addEventListener("pointerdown", (e) => {
+    try { tab.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+    grip = { id: e.pointerId, x: e.clientX, moved: false };
+    e.preventDefault();
+  });
+  tab.addEventListener("pointermove", (e) => {
+    if (!grip || e.pointerId !== grip.id) return;
+    const dx = e.clientX - grip.x;
+    if (Math.abs(dx) < 14) return;
+    grip.moved = true;
+    pinned = dx < 0;          // toward the middle of the screen = open
+    if (pinned) { clearTimeout(peek); peek = 0; }
+    paintState();
+    grip.x = e.clientX;
+  });
+  const gripEnd = (e) => {
+    if (!grip || e.pointerId !== grip.id) return;
+    if (!grip.moved && e.type === "pointerup") {
+      pinned = !pinned;
+      if (pinned) { clearTimeout(peek); peek = 0; }
+      paintState();
+    }
+    grip = null;
+  };
+  tab.addEventListener("pointerup", gripEnd);
+  tab.addEventListener("pointercancel", gripEnd);
+
+  const onScroll = () => { update(); wake(); };
+  scroller.addEventListener("scroll", onScroll, { passive: true });
   const ro = new ResizeObserver(update);
   ro.observe(scroller);
   if (scroller.firstElementChild) ro.observe(scroller.firstElementChild);
@@ -147,9 +207,11 @@ export function attachRail(scroller, host) {
   return {
     update,
     destroy() {
+      clearTimeout(peek);
       ro.disconnect();
       window.removeEventListener("resize", update);
-      scroller.removeEventListener("scroll", update);
+      scroller.removeEventListener("scroll", onScroll);
+      delete host.dataset.rail;
       rail.remove();
     },
   };
@@ -328,4 +390,35 @@ export function colourSheet({ title, hex, printedAs, palette = [], photo = null,
 function lum(hex) {
   const [r, g, b] = hexToRgb(hex);
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+// ---------------------------------------------------------------- folder sheet
+/** Pick a folder for a project, or make a new one. Same sheet as the colour
+ *  picker, smaller. onPick(name) gets "" for "no folder". */
+export function folderSheet({ title, folders, current = "", onPick, onClose }) {
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  function close() {
+    document.removeEventListener("keydown", onKey);
+    backdrop.remove();
+    onClose?.();
+  }
+  const pick = (name) => { close(); onPick(name); };
+  const chip = (label, name) => h("button", { class: `chip${name === current ? " on" : ""}`, type: "button",
+    onclick: () => pick(name) }, label);
+  const input = h("input", { class: "val wide-val", placeholder: "new folder name", maxlength: "40",
+    autocomplete: "off", "aria-label": "new folder name" });
+  const create = () => { const v = input.value.trim(); if (v) pick(v.slice(0, 40)); };
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") create(); });
+  document.addEventListener("keydown", onKey);
+
+  const sheet = h("div", { class: "sheet", role: "dialog", "aria-label": title },
+    h("div", { class: "sheet-bar" }, h("b", {}, title),
+      h("button", { class: "sheet-x", type: "button", "aria-label": "close", onclick: close }, "✕")),
+    h("div", { class: "sheet-head" }, "[ file under ]"),
+    h("div", { class: "chips" }, chip("no folder", ""), folders.map((f) => chip(f, f))),
+    h("div", { class: "sheet-head" }, "[ or a new folder ]"),
+    h("div", { class: "row" }, input, h("button", { class: "btn", type: "button", onclick: create }, "create")));
+  const backdrop = h("div", { class: "sheet-backdrop", onpointerdown: (e) => { if (e.target === backdrop) close(); } }, sheet);
+  document.body.append(backdrop);
+  return { close };
 }

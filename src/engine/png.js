@@ -4,7 +4,7 @@
 // projects contain (Pillow writes them the same way): greyscale, grey +
 // alpha, RGB and RGBA at 8 or 16 bits, non-interlaced.
 
-import { crc32 } from "./zip.js";
+import { crc32, inflate } from "./zip.js";
 
 const SIG = [137, 80, 78, 71, 13, 10, 26, 10];
 const CHANNELS = { 0: 1, 2: 3, 4: 2, 6: 4 };
@@ -83,10 +83,14 @@ export async function decode(bytes) {
   if (!channels || (depth !== 8 && depth !== 16) || interlace) {
     throw new Error(`unsupported PNG (type ${colorType}, ${depth}-bit${interlace ? ", interlaced" : ""})`);
   }
+  // a PNG header can claim any size; refuse ones no project would produce
+  if (!width || !height || width * height > 36e6 || width * height * channels * (depth / 8) > 160e6) {
+    throw new Error("that image is too large");
+  }
   const joined = new Uint8Array(idat.reduce((s, c) => s + c.length, 0));
   let o = 0;
   for (const c of idat) { joined.set(c, o); o += c.length; }
-  const raw = await pipe(new DecompressionStream("deflate"), joined);
+  const raw = await inflate("deflate", joined, (width * channels * depth / 8 + 1) * height + 1024);
 
   const bpp = channels * depth / 8;
   const stride = width * bpp;

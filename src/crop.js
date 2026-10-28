@@ -1,5 +1,12 @@
 // Touch crop tool. Works in "oriented" pixel space: the source photo after
 // rotate/flip, which is the same space the desktop's prep.crop uses.
+//
+// It also hosts the lasso: a drawing layer over the photo that hands back
+// closed loops. Loops are returned in the photo's own normalised (u, v)
+// coordinates - not the oriented ones - so a cut stays on the subject when
+// the photo is rotated, flipped or re-cropped.
+
+import { polygonArea, simplify } from "./engine/shape.js";
 
 const MIN_CROP_PX = 64;
 const CROP_PAD_PX = 18;        // keep in sync with .crop-wrap padding
@@ -66,7 +73,12 @@ export function createCropper(container, bitmap, { rotateDeg = 0, flipH = false,
     hnd.dataset.corner = k;
     box.appendChild(hnd);
   }
-  stage.append(canvas, box);
+  // Lasso layer: sits over everything in the stage and only takes touches
+  // while the lasso is on.
+  const lassoLayer = document.createElement("canvas");
+  lassoLayer.className = "lasso-layer";
+  lassoLayer.hidden = true;
+  stage.append(canvas, box, lassoLayer);
   wrap.append(stage);
   container.appendChild(wrap);
 
@@ -85,6 +97,8 @@ export function createCropper(container, bitmap, { rotateDeg = 0, flipH = false,
     canvas.height = Math.round(cssH * dpr);
     canvas.style.width = `${cssW}px`;
     canvas.style.height = `${cssH}px`;
+    lassoLayer.width = canvas.width;
+    lassoLayer.height = canvas.height;
     const ctx = canvas.getContext("2d");
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(oriented, 0, 0, canvas.width, canvas.height);
@@ -176,6 +190,81 @@ export function createCropper(container, bitmap, { rotateDeg = 0, flipH = false,
   wrap.addEventListener("pointerup", end);
   wrap.addEventListener("pointercancel", end);
 
+  // ---- photo (u, v in 0..1) <-> oriented pixels, the inverse of orient() ----
+  function toOriented(u, v) {
+    const bw = bitmap.width, bh = bitmap.height;
+    let x = u * bw - bw / 2;
+    const y0 = v * bh - bh / 2;
+    if (flip) x = -x;
+    const a = (((rotate % 360) + 360) % 360) * Math.PI / 180, cs = Math.cos(a), sn = Math.sin(a);
+    return [x * cs - y0 * sn + oriented.width / 2, x * sn + y0 * cs + oriented.height / 2];
+  }
+  function toSource(ox, oy) {
+    const bw = bitmap.width, bh = bitmap.height;
+    const rx = ox - oriented.width / 2, ry = oy - oriented.height / 2;
+    const a = -(((rotate % 360) + 360) % 360) * Math.PI / 180, cs = Math.cos(a), sn = Math.sin(a);
+    let x = rx * cs - ry * sn;
+    const y = rx * sn + ry * cs;
+    if (flip) x = -x;
+    return [(x + bw / 2) / bw, (y + bh / 2) / bh];
+  }
+
+  // ---- lasso ----
+  const TOOL_TINT = { cut: "255, 90, 70", back: "90, 220, 120", only: "90, 170, 255" };
+  let lasso = null;       // { tool, onStroke } while on
+  let stroke = null;      // { id, pts: [[x, y] css px relative to the stage] }
+
+  function paintStroke() {
+    const ctx = lassoLayer.getContext("2d");
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, lassoLayer.width, lassoLayer.height);
+    if (!stroke || stroke.pts.length < 2) return;
+    const k = lassoLayer.width / Math.max(1, canvas.clientWidth);
+    ctx.scale(k, k);
+    ctx.lineJoin = ctx.lineCap = "round";
+    ctx.beginPath();
+    stroke.pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.closePath();
+    ctx.fillStyle = `rgba(${TOOL_TINT[lasso?.tool] || TOOL_TINT.cut}, .28)`;
+    ctx.fill();
+    ctx.lineWidth = 4.5; ctx.strokeStyle = "rgba(0, 0, 0, .75)"; ctx.stroke();
+    ctx.lineWidth = 2; ctx.strokeStyle = "#fff"; ctx.setLineDash([7, 5]); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  const here = (e) => {
+    const r = lassoLayer.getBoundingClientRect();
+    return [e.clientX - r.left, e.clientY - r.top];
+  };
+  lassoLayer.addEventListener("pointerdown", (e) => {
+    if (!lasso) return;
+    e.preventDefault();
+    try { lassoLayer.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+    stroke = { id: e.pointerId, pts: [here(e)] };
+    paintStroke();
+  });
+  lassoLayer.addEventListener("pointermove", (e) => {
+    if (!stroke || e.pointerId !== stroke.id) return;
+    const p = here(e), last = stroke.pts[stroke.pts.length - 1];
+    if (Math.hypot(p[0] - last[0], p[1] - last[1]) < 2) return;
+    stroke.pts.push(p);
+    paintStroke();
+  });
+  const lassoEnd = (e, cancelled) => {
+    if (!stroke || e.pointerId !== stroke.id) return;
+    const pts = stroke.pts;
+    stroke = null;
+    paintStroke();
+    if (cancelled || !lasso) return;
+    const s = scale();
+    const loop = simplify(pts, 1.4, true);
+    // a tap or a scribble too small to be a loop is not a cut
+    if (loop.length < 3 || polygonArea(loop) < 80) return;
+    lasso.onStroke(loop.map(([x, y]) => toSource(x / s, y / s).map((v) => Math.round(v * 1e4) / 1e4)));
+  };
+  lassoLayer.addEventListener("pointerup", (e) => lassoEnd(e, false));
+  lassoLayer.addEventListener("pointercancel", (e) => lassoEnd(e, true));
+
   const ro = new ResizeObserver(() => draw());
   ro.observe(wrap);
   const onWindow = () => draw();
@@ -226,6 +315,18 @@ export function createCropper(container, bitmap, { rotateDeg = 0, flipH = false,
       ctx.drawImage(oriented, x, y, w, h, 0, 0, out.width, out.height);
       return out;
     },
+    /** Photo coordinates (u, v in 0..1) <-> oriented pixels. */
+    toOriented, toSource,
+    /** Turn the lasso on ({ tool, onStroke(loop) }) or off (null). The crop
+     *  box is out of reach while it is on. */
+    setLasso(opts) {
+      lasso = opts;
+      stroke = null;
+      lassoLayer.hidden = !opts;
+      stage.classList.toggle("lassoing", !!opts);
+      paintStroke();
+    },
+    setLassoTool(tool) { if (lasso) lasso.tool = tool; },
     /** Re-measure after the layout around the crop changed. */
     relayout() { draw(); },
     destroy() {

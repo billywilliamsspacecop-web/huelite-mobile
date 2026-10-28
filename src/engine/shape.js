@@ -9,6 +9,9 @@
 //   alpha     the image's own transparency (PNG cut-outs, stickers)
 //   knockout  remove the background colour: pixels close to the colour
 //             around the edge of the crop, and connected to that edge
+//
+// On top of any of those, hand cuts (the lasso) chip pieces away, put them
+// back, or keep only what is inside a loop - see applyCuts.
 
 export const MODES = ["rect", "ellipse", "alpha", "knockout"];
 export const MODE_LABELS = {
@@ -166,6 +169,95 @@ export function knockoutMask(imageData, tolerance) {
   }
   const m = new Uint8Array(w * h);
   for (let p = 0; p < m.length; p++) m[p] = bg[p] ? 0 : 1;
+  return m;
+}
+
+// ---------------------------------------------------------------- hand cuts
+export const CUT_TOOLS = ["cut", "back", "only"];
+
+/** Pixels whose centres fall inside the polygon (even-odd, so a loop that
+ *  crosses itself still fills sensibly). pts: [[x, y], ...] in pixels. */
+export function fillPolygon(pts, w, h) {
+  const out = new Uint8Array(w * h);
+  if (pts.length < 3) return out;
+  let y0 = Infinity, y1 = -Infinity;
+  for (const p of pts) { if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1]; }
+  const ys = Math.max(0, Math.ceil(y0 - 0.5)), ye = Math.min(h - 1, Math.floor(y1 - 0.5));
+  const xs = [];
+  for (let y = ys; y <= ye; y++) {
+    const yc = y + 0.5;
+    xs.length = 0;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [xa, ya] = pts[j], [xb, yb] = pts[i];
+      if ((ya <= yc && yb > yc) || (yb <= yc && ya > yc)) xs.push(xa + (yc - ya) * (xb - xa) / (yb - ya));
+    }
+    xs.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const xa = Math.max(0, Math.ceil(xs[k] - 0.5)), xb = Math.min(w - 1, Math.floor(xs[k + 1] - 0.5));
+      for (let x = xa; x <= xb; x++) out[y * w + x] = 1;
+    }
+  }
+  return out;
+}
+
+/** Ramer-Douglas-Peucker: a finger-drawn loop is hundreds of points; this
+ *  keeps the shape of it in a few dozen. A loop ends where it began, so the
+ *  start-to-end chord is nothing and would swallow the whole thing; with
+ *  `closed` it is split at the point farthest from the start first. */
+export function simplify(pts, eps, closed = false) {
+  if (pts.length < 3) return pts.slice();
+  if (closed) {
+    let far = 1, farD = -1;
+    for (let i = 1; i < pts.length; i++) {
+      const d = Math.hypot(pts[i][0] - pts[0][0], pts[i][1] - pts[0][1]);
+      if (d > farD) { farD = d; far = i; }
+    }
+    const a = simplify(pts.slice(0, far + 1), eps), b = simplify(pts.slice(far), eps);
+    return a.concat(b.slice(1));
+  }
+  const keep = new Uint8Array(pts.length);
+  keep[0] = keep[pts.length - 1] = 1;
+  const stack = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop();
+    const [ax, ay] = pts[a], [bx, by] = pts[b];
+    const dx = bx - ax, dy = by - ay, len = Math.hypot(dx, dy) || 1;
+    let far = -1, farD = eps;
+    for (let i = a + 1; i < b; i++) {
+      const d = Math.abs((pts[i][0] - ax) * dy - (pts[i][1] - ay) * dx) / len;
+      if (d > farD) { farD = d; far = i; }
+    }
+    if (far >= 0) { keep[far] = 1; stack.push([a, far], [far, b]); }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+
+/** Polygon area (shoelace), for ignoring a loop that is really a tap. */
+export function polygonArea(pts) {
+  let a = 0;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) a += pts[j][0] * pts[i][1] - pts[i][0] * pts[j][1];
+  return Math.abs(a) / 2;
+}
+
+/** The base shape (null = the whole crop) with every hand cut applied, in
+ *  the order they were made. A cut is { tool, pts: [[u, v], ...] } with the
+ *  points in the photo's own normalised coordinates, so they stay on the
+ *  subject however the crop moves; toPx(u, v) -> [x, y] in this mask's pixels.
+ *    cut   remove what is inside the loop
+ *    back  restore what is inside the loop (only within the base shape)
+ *    only  keep what is inside the loop, remove everything else */
+export function applyCuts(base, w, h, cuts, toPx) {
+  const m = base ? base.slice() : new Uint8Array(w * h).fill(1);
+  for (const cut of cuts) {
+    const poly = fillPolygon(cut.pts.map(([u, v]) => toPx(u, v)), w, h);
+    if (cut.tool === "back") {
+      for (let i = 0; i < m.length; i++) if (poly[i]) m[i] = base ? base[i] : 1;
+    } else if (cut.tool === "only") {
+      for (let i = 0; i < m.length; i++) m[i] = m[i] && poly[i] ? 1 : 0;
+    } else {
+      for (let i = 0; i < m.length; i++) if (poly[i]) m[i] = 0;
+    }
+  }
   return m;
 }
 

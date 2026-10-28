@@ -76,6 +76,21 @@ export async function getProject(id) {
 export async function deleteProject(id) {
   await tx(["projects", "files"], "readwrite", (p, f) => {
     p.delete(id);
-    for (const name of ["source", "prepped", "solved"]) f.delete(`${id}/${name}`);
+    for (const name of ["source", "prepped", "solved", "side"]) f.delete(`${id}/${name}`);
   });
+}
+
+/** File a project under a folder ("" = none) without touching anything else. */
+export async function setGroup(id, group) {
+  const rec = await getProject(id);
+  if (!rec) return;
+  rec.data.group = String(group || "").trim().slice(0, 60);
+  await saveProject(rec.data);
+}
+
+/** Rename a folder: every project in it follows. newName "" empties it. */
+export async function renameGroup(oldName, newName) {
+  for (const rec of await listProjects()) {
+    if ((rec.data.group || "") === oldName) await setGroup(rec.id, newName);
+  }
 }

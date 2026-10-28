@@ -57,6 +57,29 @@ export function buildLut(filaments, layerHeight, mode = "solid") {
   return { lut, owner };
 }
 
+/** The same stack as buildLut, but as weights: lut[k] = sum over slots of
+ *  weights[k][slot] * colour[slot]. Every row is a convex mix of the
+ *  filament colours, which is what lets fitFilaments solve for the colours
+ *  directly instead of guessing. */
+export function lutWeights(filaments, layerHeight, mode = "solid") {
+  const n = filaments.length;
+  let cur = new Float64Array(n);
+  cur[0] = 1;
+  const rows = [cur.slice()];
+  filaments.forEach((fil, i) => {
+    const td = Math.max(1e-4, Number(fil.td_mm ?? 1));
+    const alpha = Math.min(1, Math.max(0, layerHeight / td));
+    const nT = Math.min(3, Math.max(1, roundHalfEven(td / layerHeight * 0.25)));
+    for (let k = 0; k < (fil.band_layers | 0); k++) {
+      const wgt = mode === "solid" ? (k >= nT ? 1 : 0.6 + 0.4 * k / nT) : alpha;
+      cur = cur.map((c) => c * (1 - wgt));
+      cur[i] += wgt;
+      rows.push(cur.slice());
+    }
+  });
+  return rows;
+}
+
 /** Map every pixel to the height whose colour is closest (redmean).
  *  rgba is ImageData.data; returns a Uint16Array of heights. */
 export function solveHeights(rgba, w, h, lut, { dither = true, amount = 1 } = {}) {
@@ -277,4 +300,91 @@ export function importColours(rgba, mask, n) {
   }
   const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
   return seeds.sort((a, b) => lum(a) - lum(b)).map(rgbToHex);
+}
+
+/** Choose the filament colours that make the *printed* stack look most like
+ *  the photo.
+ *
+ *  importColours finds the photo's own colours, but a stack does not print
+ *  its swatches: in translucent mode a light, high-TD filament never gets
+ *  opaque within its band, so the top of the stack comes out darker and
+ *  greyer than the colour that was picked (a #8DA573 green topped out at a
+ *  muddy #6F6F61). Because every tone in the stack is a fixed mix of the
+ *  filament colours (lutWeights), the best colours are a small linear
+ *  least-squares problem: assign each pixel to its nearest tone, solve for
+ *  the colours that bring those tones closest to their pixels, repeat.
+ *  Colours are kept inside 0..255, so where the stack simply cannot reach a
+ *  tone it gets as close as it can. Solid bands reduce to plain averaging.
+ *
+ *  Returns hex colours, one per filament (unchanged for a slot with no
+ *  layers), starting from `start` (hex list; defaults to the filaments'). */
+export function fitFilaments(rgba, mask, filaments, layerHeight, mode = "solid",
+                             { start = null, rounds = 8 } = {}) {
+  const N = filaments.length;
+  const total = rgba.length / 4;
+  const stride = Math.max(1, Math.floor(total / 24000));
+  const px = [];
+  for (let p = 0; p < total; p += stride) {
+    if (mask && !mask[p]) continue;
+    px.push(rgba[p * 4], rgba[p * 4 + 1], rgba[p * 4 + 2]);
+  }
+  const count = px.length / 3;
+  const colours = (start || filaments.map((f) => f.hex)).map(hexToRgb);
+  if (!count || !N) return colours.map(rgbToHex);
+
+  const W = lutWeights(filaments, layerHeight, mode);
+  const K = W.length;
+  const used = filaments.map((f) => (f.band_layers | 0) > 0);
+
+  for (let round = 0; round < rounds; round++) {
+    // the stack's tones for the colours as they stand
+    const L = W.map((row) => [0, 1, 2].map((c) => row.reduce((s, wt, i) => s + wt * colours[i][c], 0)));
+    // nearest tone per pixel, same metric the solve uses
+    const cnt = new Float64Array(K);
+    const sum = new Float64Array(K * 3);
+    for (let i = 0; i < count; i++) {
+      const r = px[i * 3], g = px[i * 3 + 1], b = px[i * 3 + 2];
+      let best = 0, bestD = Infinity;
+      for (let k = 0; k < K; k++) {
+        const lr = L[k][0], lg = L[k][1], lb = L[k][2];
+        const rbar = (r + lr) * 0.5, dr = r - lr, dg = g - lg, db = b - lb;
+        const d = (2 + rbar / 256) * dr * dr + 4 * dg * dg + (2 + (255 - rbar) / 256) * db * db;
+        if (d < bestD) { bestD = d; best = k; }
+      }
+      cnt[best]++; sum[best * 3] += r; sum[best * 3 + 1] += g; sum[best * 3 + 2] += b;
+    }
+    // normal equations: A = sum cnt[k] w w^T, rhs = sum w * (sum of pixels at k)
+    const A = Array.from({ length: N }, () => new Float64Array(N));
+    const rhs = [0, 1, 2].map(() => new Float64Array(N));
+    for (let k = 0; k < K; k++) {
+      if (!cnt[k]) continue;
+      const w = W[k];
+      for (let i = 0; i < N; i++) {
+        if (!w[i]) continue;
+        for (let j = 0; j < N; j++) A[i][j] += cnt[k] * w[i] * w[j];
+        for (let c = 0; c < 3; c++) rhs[c][i] += w[i] * sum[k * 3 + c];
+      }
+    }
+    // a whisper of pull toward where each colour already is, so a slot the
+    // photo barely uses doesn't swing to an extreme
+    const ridge = count * 1e-3;
+    for (let i = 0; i < N; i++) {
+      A[i][i] += ridge;
+      for (let c = 0; c < 3; c++) rhs[c][i] += ridge * colours[i][c];
+    }
+    // box-constrained least squares by projected Gauss-Seidel
+    for (let c = 0; c < 3; c++) {
+      const x = colours.map((col) => col[c]);
+      for (let sweep = 0; sweep < 60; sweep++) {
+        for (let i = 0; i < N; i++) {
+          if (!used[i]) continue;
+          let v = rhs[c][i];
+          for (let j = 0; j < N; j++) if (j !== i) v -= A[i][j] * x[j];
+          x[i] = Math.min(255, Math.max(0, v / A[i][i]));
+        }
+      }
+      colours.forEach((col, i) => { col[c] = x[i]; });
+    }
+  }
+  return colours.map(rgbToHex);
 }

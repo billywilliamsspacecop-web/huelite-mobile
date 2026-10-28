@@ -32,6 +32,27 @@ async function deflate(chunks) {
   }
 }
 
+const MAX_INFLATED = 256 * 1024 * 1024;   // no honest project file inflates past this
+
+/** Run bytes through a (de)compression stream, refusing output past `max`:
+ *  a tiny hostile file can otherwise inflate to gigabytes and take the tab down. */
+export async function inflate(format, bytes, max = MAX_INFLATED) {
+  const reader = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(format)).getReader();
+  const parts = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.length;
+    if (n > max) { await reader.cancel(); throw new Error("a file in that zip is far too large"); }
+    parts.push(value);
+  }
+  const out = new Uint8Array(n);
+  let o = 0;
+  for (const part of parts) { out.set(part, o); o += part.length; }
+  return out;
+}
+
 /** entries: [{ name, chunks: (string | Uint8Array)[] }] -> Blob */
 export async function makeZip(entries, mime = "application/zip") {
   const enc = new TextEncoder();
@@ -98,6 +119,7 @@ export function readZip(bytes) {
   if (end < 0) throw new Error("not a zip file");
   const count = dv.getUint16(end + 10, true);
   let p = dv.getUint32(end + 16, true);
+  if (p > bytes.length) throw new Error("damaged zip directory");
   const dec = new TextDecoder();
   const out = new Map();
   for (let n = 0; n < count; n++) {
@@ -113,11 +135,11 @@ export function readZip(bytes) {
     if (name.endsWith("/")) continue;
     out.set(name, async () => {
       const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
+      if (start + csize > bytes.length) throw new Error("damaged zip (entry runs past the end)");
       const data = bytes.subarray(start, start + csize);
       if (method === 0) return data.slice();
       if (method !== 8) throw new Error(`unsupported zip compression (${method})`);
-      const ds = new DecompressionStream("deflate-raw");
-      return new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(ds)).arrayBuffer());
+      return inflate("deflate-raw", data);
     });
   }
   return out;

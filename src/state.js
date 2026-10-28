@@ -69,6 +69,7 @@ export function defaultData(name) {
       band_mode: "solid",
       slope_mm_per_layer: 0.3,
       colours_seeded: false,
+      colours_auto: false,   // colours were picked by the fit, so they follow the stack
       border: { enabled: true, width_mm: 3.0, mode: "raised", frame_slot: 1 },
     },
     export: {
@@ -78,6 +79,90 @@ export function defaultData(name) {
       price_per_kg: 25.0,
     },
   };
+}
+
+/** Make a loaded project.json safe to use. Projects arrive from IndexedDB, a
+ *  .zip someone sent, or a hand edit, and the UI trusts their fields: colours
+ *  go into style attributes, cut loops into polygon fills, sizes into canvas
+ *  allocations. Anything missing or out of range falls back to the default. */
+export function sanitizeProject(raw) {
+  const d = raw && typeof raw === "object" ? raw : {};
+  const base = defaultData(typeof d.name === "string" ? d.name : "project");
+  const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+  const num = (v, fb, lo, hi) => (Number.isFinite(+v) && v !== null && v !== "" ? Math.min(hi, Math.max(lo, +v)) : fb);
+  const pick = (v, list, fb) => (list.includes(v) ? v : fb);
+  const hex = (v, fb) => (/^#[0-9a-f]{6}$/i.test(String(v)) ? String(v).toUpperCase() : fb);
+  const text = (v, fb, max) => (typeof v === "string" ? v.slice(0, max) : fb);
+
+  const out = { ...d };
+  out.schema_version = 1;
+  out.id = typeof d.id === "string" && /^[0-9a-f-]{8,64}$/i.test(d.id) ? d.id : base.id;
+  out.name = text(d.name, base.name, 120) || base.name;
+  out.created = text(d.created, base.created, 40);
+  out.modified = text(d.modified, base.modified, 40);
+  out.folder = text(d.folder, "", 200);
+  out.group = text(d.group, "", 60).trim();   // phone-only: the folder it is filed under on the home screen
+  const st = obj(d.status);
+  out.status = Object.fromEntries(STAGES.map((k) => [k, st[k] === COMPLETE ? COMPLETE : PENDING]));
+  out.source = { ...base.source, ...obj(d.source) };
+  out.source.filename = text(out.source.filename, "", 200);
+
+  const p = obj(d.prep), bp = base.prep;
+  const crop = Array.isArray(p.crop) && p.crop.length === 4 && p.crop.every((v) => Number.isFinite(+v)) ? p.crop.map(Number) : null;
+  const sh = obj(p.shape);
+  const cuts = (Array.isArray(sh.cuts) ? sh.cuts : []).slice(0, 500).flatMap((c) => {
+    const pts = Array.isArray(c?.pts) ? c.pts.slice(0, 4000) : [];
+    if (!["cut", "back", "only"].includes(c?.tool) || pts.length < 3) return [];
+    if (!pts.every((q) => Array.isArray(q) && q.length === 2 && q.every((v) => typeof v === "number" && Math.abs(v) < 100))) return [];
+    return [{ tool: c.tool, pts: pts.map(([u, v]) => [u, v]) }];
+  });
+  const adj = obj(p.adjustments);
+  out.prep = {
+    ...p,
+    crop,
+    rotate_deg: pick(+p.rotate_deg, [0, 90, 180, 270], 0),
+    flip_h: p.flip_h === true,
+    output_px: Array.isArray(p.output_px) && p.output_px.length === 2
+      ? p.output_px.map((v) => num(v, MOBILE_OUTPUT_PX, 1, 4096)) : bp.output_px,
+    physical_width_mm: num(p.physical_width_mm, bp.physical_width_mm, 5, 2000),
+    adjustments: Object.fromEntries(Object.entries(bp.adjustments).map(([k, v]) => [k, num(adj[k], v, -1, k === "decimate" ? 256 : 1)])),
+    focal_regions: Array.isArray(p.focal_regions) ? p.focal_regions : [],
+    shape: { mode: pick(sh.mode, ["rect", "ellipse", "alpha", "knockout"], "rect"),
+             tolerance: num(sh.tolerance, 0.25, 0, 1), min_feature_mm: num(sh.min_feature_mm, 0.8, 0, 20), cuts },
+  };
+
+  const so = obj(d.solve), bs = base.solve;
+  const fils = (Array.isArray(so.filaments) ? so.filaments : []).slice(0, 8).map((f, i) => ({
+    ...obj(f),
+    slot: i + 1,
+    name: text(f?.name, "", 40),
+    hex: hex(f?.hex, (DEFAULT_FILAMENTS[i] || DEFAULT_FILAMENTS[0]).hex),
+    td_mm: num(f?.td_mm, 1, 0.05, 6),
+    band_layers: Math.round(num(f?.band_layers, 12, 0, 120)),
+  }));
+  const bo = obj(so.border);
+  out.solve = {
+    ...so,
+    layer_height_mm: num(so.layer_height_mm, bs.layer_height_mm, 0.02, 1),
+    base_layers: Math.round(num(so.base_layers, bs.base_layers, 1, 400)),
+    max_layers: Math.round(num(so.max_layers, bs.max_layers, 1, 2000)),
+    filaments: fils.length ? fils : bs.filaments,
+    dither: pick(so.dither, ["bayer8", "none"], "bayer8"),
+    dither_amount: num(so.dither_amount, 1, 0, 4),
+    band_mode: pick(so.band_mode, ["solid", "blend"], "solid"),
+    slope_mm_per_layer: num(so.slope_mm_per_layer, 0.3, 0, 5),
+    colours_seeded: so.colours_seeded === true,
+    colours_auto: so.colours_auto === true,
+    border: { ...bs.border, ...bo,
+      enabled: bo.enabled !== false,
+      width_mm: num(bo.width_mm, 3, 0, 100),
+      mode: pick(bo.mode, ["raised", "flush", "none"], "raised"),
+      frame_slot: Math.round(num(bo.frame_slot, 1, 1, 8)) },
+  };
+  const ex = obj(d.export);
+  out.export = { ...base.export, ...ex, price_per_kg: num(ex.price_per_kg, 25, 0, 100000),
+                 formats: Array.isArray(ex.formats) ? ex.formats.filter((f) => f === "3mf" || f === "stl") : ["3mf"] };
+  return out;
 }
 
 // In memory for now; saving projects between launches (IndexedDB) is next.

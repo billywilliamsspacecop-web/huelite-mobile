@@ -1,16 +1,18 @@
 import { app, canOpen, COMPLETE, DEFAULT_FILAMENTS, defaultData, MOBILE_OUTPUT_PX, PENDING,
-         setStatus, STAGE_LABELS, STAGE_REQUIRES, STAGES } from "./state.js";
+         sanitizeProject, setStatus, STAGE_LABELS, STAGE_REQUIRES, STAGES } from "./state.js";
 import { ASPECTS, createCropper, loadPhoto } from "./crop.js";
 import * as shape from "./engine/shape.js";
 import * as solve from "./engine/solve.js";
 import * as mesh from "./engine/mesh.js";
 import * as bambu3mf from "./engine/bambu3mf.js";
 import * as imaging from "./engine/imaging.js";
+import { createView3D, renderSideThumb } from "./engine/view3d.js";
+import { attachSwipe } from "./swipe.js";
 import * as store from "./store.js";
 import * as projectzip from "./engine/projectzip.js";
 import { uuid } from "./state.js";
 import { h } from "./dom.js";
-import { attachRail, colourSheet, slider } from "./ui.js";
+import { attachRail, colourSheet, folderSheet, slider } from "./ui.js";
 import { hexToRgb, toHex } from "./colour.js";
 
 const root = document.getElementById("app");
@@ -25,10 +27,13 @@ let exportOpts = { detail: "standard", plate: "A1", formats: { "3mf": true, stl:
 let lastFiles = [];           // [{ name, url }] from the last export
 let prepView = "crop";        // crop | result
 let preSuggest = null;        // adjustments before the last "suggest", for undo
-let solveShaded = true;       // lighting on the simulated print (off = flat swatch colours)
+let lassoTool = "cut";        // cut | back | only
+let solveShaded = false;      // relief lighting on the top-down print (off = flat, exact colours)
 let exportView = "top";       // top | angle, when the preview pane is too small for both
 let rail = null;              // scroll rail on the controls pane
 let currentSheet = null;      // open colour sheet, if any
+let enter = "rise";             // how the next render comes in: fwd | back | rise (reset after use)
+const disposers = [];         // things a screen must release before the next one draws (GL contexts)
 
 // ---------------------------------------------------------------- helpers
 const head = (text) => h("div", { class: "section-head" }, `[ ${text} ]`);
@@ -119,11 +124,11 @@ function numField(labelText, value, { step, min, max, fmt = (v) => String(v), on
       } }));
 }
 
-function rangeField(labelText, value, { min, max, step = 1, fmt, oninput }) {
+function rangeField(labelText, value, { min, max, step = 1, fmt, oninput, key = false }) {
   const out = h("span", { class: "range-val" }, fmt(value));
-  return h("div", { class: "range" },
+  return h("div", { class: `range${key ? " key" : ""}` },
     h("div", { class: "range-head" }, h("span", {}, labelText), out),
-    slider({ min, max, step, value, onInput: (v) => { out.textContent = fmt(v); oninput(v); } }));
+    slider({ min, max, step, value, fmt, onInput: (v) => { out.textContent = fmt(v); oninput(v); } }));
 }
 
 const STAGE_SUB = {
@@ -142,9 +147,24 @@ function toast(msg, ms = 1800) {
   toastTimer = setTimeout(() => t.classList.remove("show"), ms);
 }
 
+/** HueLite's loading mark: filament layers stacking up under a print head. */
+function loader(label, mini = false) {
+  return h("div", { class: `loader${mini ? " mini" : ""}`, role: "status" },
+    h("div", { class: "stack" }, h("i"), h("i"), h("i"), h("i"), h("b", { class: "nozzle" })),
+    h("div", { class: "loader-label" }, label.replace(/[….]+$/, ""),
+      h("span", { class: "dots" }, h("i", {}, "."), h("i", {}, "."), h("i", {}, "."))));
+}
+
+/** Re-run a one-shot CSS animation (view swaps) by restarting its class. */
+function pulse(el, cls = "swap") {
+  el.classList.remove(cls);
+  void el.offsetWidth;
+  el.classList.add(cls);
+}
+
 /** Run something heavy with a "working" veil, after the veil has painted. */
 async function busy(label, fn) {
-  const veil = h("div", { class: "veil" }, h("div", {}, label));
+  const veil = h("div", { class: "veil" }, loader(label));
   document.body.append(veil);
   await nextFrame();
   try { return await fn(); } finally { veil.remove(); }
@@ -248,7 +268,7 @@ async function openProject(id) {
     app.sourceBitmap = bmp;
     app.sourceFile = file;
     app.sourceHasAlpha = await sourceHasAlpha(bmp);
-    app.project = rec.data;
+    app.project = sanitizeProject(rec.data);
     app.prepped = app.proxy = app.solved = null;
     const prepped = app.project.status.prep === COMPLETE ? await store.getFile(id, "prepped") : null;
     if (prepped) {
@@ -315,6 +335,7 @@ async function exportProjectZip(id) {
 
 async function importProjectZip(file) {
   await busy("importing…", async () => {
+    if (file.size > 400 * 1024 * 1024) throw new Error("that file is too big to be a HueLite project");
     const { data, source, prepped, solved } = await projectzip.unpack(await file.arrayBuffer());
     if (!data.id || await store.getProject(data.id)) {
       // already on this phone: keep both
@@ -404,6 +425,7 @@ applyLayout(measureLayout());
 
 // ---------------------------------------------------------------- shell
 function render() {
+  disposers.splice(0).forEach((fn) => fn());
   currentSheet?.close();
   currentSheet = null;
   cropper?.destroy();
@@ -411,6 +433,9 @@ function render() {
   rail?.destroy();
   rail = null;
   root.innerHTML = "";
+  // one-shot: resizes and rebuilds that follow don't replay the entrance
+  if (enter) root.dataset.enter = enter; else delete root.dataset.enter;
+  enter = null;
   root.dataset.stage = app.stage;
   document.documentElement.dataset.stage = app.stage;
 
@@ -436,10 +461,26 @@ function render() {
   ({ prep: renderPrep, solve: renderSolve, export: renderExport })[app.stage](screen, action);
   const dock = h("div", { class: "dock" }, action.childElementCount ? action : null,
     home ? null : renderStepper());
-  root.append(header, h("div", { class: "body" }, screen), dock);
+  const body = h("div", { class: "body" }, screen);
+  root.append(header, body, dock);
 
   const ctrl = screen.querySelector(".pane.ctrl");
   if (ctrl) rail = attachRail(ctrl, screen);
+  screen.querySelectorAll(".ctrl-inner > .group").forEach((g, i) => g.style.setProperty("--i", String(Math.min(i, 9))));
+
+  // swipe left / right between stages
+  if (app.project) {
+    const at = STAGES.indexOf(app.stage);
+    disposers.push(attachSwipe(body, {
+      drag: screen,
+      canGo: (dir) => !!STAGES[at + dir] && canOpen(STAGES[at + dir]),
+      onGo: (dir) => go(STAGES[at + dir]),
+      onBlocked: (dir) => {
+        const to = STAGES[at + dir];
+        if (to && !canOpen(to)) toast(`Finish ${STAGE_LABELS[STAGE_REQUIRES[to]]} first`);
+      },
+    }));
+  }
 }
 
 function renderStepper() {
@@ -460,6 +501,8 @@ function refreshStepper() {
 }
 
 function go(stage) {
+  const from = STAGES.indexOf(app.stage), to = STAGES.indexOf(stage);
+  enter = app.project && from !== to ? (to > from ? "fwd" : "back") : "rise";
   app.stage = stage;
   render();
 }
@@ -479,6 +522,7 @@ function renderPrep(screen, action) {
 
   const p = app.project.prep;
   p.shape = { ...shape.DEFAULT_SHAPE, ...(p.shape || {}) };
+  if (!Array.isArray(p.shape.cuts)) p.shape.cuts = [];   // lasso loops, in photo coordinates
   const invalidate = () => {
     if (app.project.status.prep === COMPLETE) { setStatus("prep", PENDING); refreshStepper(); }
   };
@@ -500,10 +544,12 @@ function renderPrep(screen, action) {
   // live shape preview, painted over the crop box by the cropper
   const painter = (oriented, [x, y, w, hgt]) => {
     queueResult();
-    if (p.shape.mode === "rect") { shapeNote.textContent = "prints the whole crop"; return null; }
+    if (p.shape.mode === "rect" && !p.shape.cuts.length) {
+      shapeNote.textContent = "prints the whole crop";
+      return null;
+    }
     const id = cropSample(oriented, [x, y, w, hgt], PREP_OVERLAY_PX);
-    const m = shape.build(p.shape.mode, id, { tolerance: p.shape.tolerance,
-      pxPerMm: id.width / p.physical_width_mm, minFeatureMm: p.shape.min_feature_mm });
+    const m = buildMask(id, [x, y, w, hgt]);
     shapeNote.textContent = shapeVerdict(p.shape.mode, m);
     if (!m) return null;
     return canvasOf(checkered(m, id.width, id.height));
@@ -516,16 +562,21 @@ function renderPrep(screen, action) {
     if (!cropper || resultHost.hidden) return;
     const crop = cropper.getCrop();
     const id = cropSample(cropper.oriented(), crop, PREP_RESULT_PX);
-    const m = shape.build(p.shape.mode, id, { tolerance: p.shape.tolerance,
-      pxPerMm: id.width / p.physical_width_mm, minFeatureMm: p.shape.min_feature_mm });
+    const m = buildMask(id, crop);
     shape.flatten(id);
-    // pixel blocks are defined at output resolution; scale them for the
-    // preview the same way the desktop does
+    // Pixel blocks and the denoise window are measured in pixels at output
+    // resolution, and this preview is smaller than that. Scale both to the
+    // preview, or it would show a smoother picture than Prep commits.
     const adj = { ...imaging.DEFAULT_ADJUSTMENTS, ...p.adjustments };
+    const outW = Math.round(crop[2] * Math.min(1, MOBILE_OUTPUT_PX / Math.max(crop[2], crop[3])));
+    const shrink = id.width / Math.max(1, outW);
     if (adj.pixelize > 0) {
-      const outW = Math.round(crop[2] * Math.min(1, MOBILE_OUTPUT_PX / Math.max(crop[2], crop[3])));
-      const blockPreview = (1 + adj.pixelize * 23) * id.width / Math.max(1, outW);
+      const blockPreview = (1 + adj.pixelize * 23) * shrink;
       adj.pixelize = Math.max(0, Math.min(1, (blockPreview - 1) / 23));
+    }
+    if (adj.denoise > 0.01 && shrink < 1) {
+      const radiusOut = Math.max(1, Math.round(adj.denoise * 4));
+      adj.denoise = Math.max(1, Math.round(radiusOut * shrink)) / 4;
     }
     const done = imaging.finish(id, adj);
     const img = new ImageData(done.data, done.width, done.height);
@@ -558,11 +609,14 @@ function renderPrep(screen, action) {
   const viewChips = chipGroup([{ key: "crop", label: "crop" }, { key: "result", label: "result" }],
     prepView, (k) => showView(k));
   function showView(k) {
+    if (k !== "crop" && lassoOn) setLassoOn(false);   // nothing to draw on in the result view
+    const was = prepView;
     prepView = k;
     cropHost.hidden = !layout.dual && k !== "crop";
     resultHost.hidden = !layout.dual && k !== "result";
     viewChips.querySelectorAll(".chip").forEach((c, i) => c.classList.toggle("on", (i === 0) === (k === "crop")));
     if (!resultHost.hidden) renderResult();
+    if (!layout.dual && was !== k) pulse(k === "crop" ? cropHost : resultHost);
   }
   /** an adjustment moved: show its effect */
   const adjusted = () => {
@@ -606,9 +660,11 @@ function renderPrep(screen, action) {
     "the closer the source looks to a flat painting, the cleaner the 3D solve. try a preset or let it suggest.");
   const setAdjustments = (adj, note) => {
     p.adjustments = { ...imaging.DEFAULT_ADJUSTMENTS, ...adj };
-    const fresh = buildSliders();
-    sliders.replaceWith(fresh);
-    sliders = fresh;
+    const [freshKey, freshFine] = [buildKeySliders(), buildFineSliders()];
+    keySliders.replaceWith(freshKey);
+    fineSliders.replaceWith(freshFine);
+    keySliders = freshKey;
+    fineSliders = freshFine;
     if (note) paintNote.textContent = note;
     adjusted();
   };
@@ -639,34 +695,106 @@ function renderPrep(screen, action) {
     undoBtn);
 
   const pct = (v) => (v ? `${v > 0 ? "+" : ""}${v}` : "0");
-  const buildSliders = () => {
-    const a = p.adjustments;
-    const slider = (label, key, min, max, fmt, scale = 100) =>
-      rangeField(label, Math.round(a[key] * scale), { min, max, fmt,
-        oninput: (v) => { a[key] = v / scale; adjusted(); } });
-    return h("div", {},
-      slider("brightness", "brightness", -60, 60, pct),
-      slider("contrast", "contrast", -60, 60, pct),
-      slider("saturation", "saturation", -100, 100, pct),
-      slider("denoise", "denoise", 0, 100, (v) => (v ? `${v}%` : "off")),
-      slider("sharpen", "sharpen", 0, 100, (v) => (v ? `${v}%` : "off")),
-      slider("pixelize", "pixelize", 0, 100,
-        (v) => (v ? `${Math.round(1 + v / 100 * 23)} px blocks` : "off")),
-      rangeField("decimate", a.decimate || 1, { min: 1, max: 32,
-        fmt: (v) => (v >= 2 ? `${v} colours` : "off"),
-        oninput: (v) => { a.decimate = v >= 2 ? v : 0; adjusted(); } }),
-      h("button", { class: "btn wide", style: "margin-top:8px",
-        onclick: () => setAdjustments(imaging.DEFAULT_ADJUSTMENTS, "adjustments reset") }, "reset adjustments"));
-  };
-  let sliders = buildSliders();
-  const adjustBlock = [head("painting"), presets, paintNote, head("image"), sliders];
+  const adjSlider = (label, key, min, max, fmt, { scale = 100, key: big = false } = {}) =>
+    rangeField(label, Math.round(p.adjustments[key] * scale), { min, max, fmt, key: big,
+      oninput: (v) => { p.adjustments[key] = v / scale; adjusted(); } });
+  // the two that matter most sit first, and a little bigger
+  const buildKeySliders = () => h("div", {},
+    rangeField("decimate", p.adjustments.decimate || 1, { min: 1, max: 32, key: true,
+      fmt: (v) => (v >= 2 ? `${v} colours` : "off"),
+      oninput: (v) => { p.adjustments.decimate = v >= 2 ? v : 0; adjusted(); } }),
+    adjSlider("saturation", "saturation", -100, 100, pct, { key: true }));
+  const buildFineSliders = () => h("div", {},
+    adjSlider("brightness", "brightness", -60, 60, pct),
+    adjSlider("contrast", "contrast", -60, 60, pct),
+    adjSlider("denoise", "denoise", 0, 100, (v) => (v ? `${v}%` : "off")),
+    adjSlider("sharpen", "sharpen", 0, 100, (v) => (v ? `${v}%` : "off")),
+    adjSlider("pixelize", "pixelize", 0, 100, (v) => (v ? `${Math.round(1 + v / 100 * 23)} px blocks` : "off")),
+    h("button", { class: "btn wide", style: "margin-top:8px",
+      onclick: () => setAdjustments(imaging.DEFAULT_ADJUSTMENTS, "adjustments reset") }, "reset adjustments"));
+  let keySliders = buildKeySliders();
+  let fineSliders = buildFineSliders();
+
+  // ---- lasso: draw a loop around what you don't want; each loop chips more away
+  let lassoOn = false;
+  let bigBefore = null;           // preview size to go back to when the lasso closes
+  const TOOLS = [
+    { key: "cut", label: "cut away", tip: "Remove what's inside the loop." },
+    { key: "back", label: "put back", tip: "Restore what a cut took away." },
+    { key: "only", label: "keep only", tip: "Keep what's inside the loop, remove everything else." },
+  ];
+  const lassoNote = h("p", { class: "meta" }, "");
+  const lassoBtn = h("button", { class: "btn wide lasso-btn", type: "button", onclick: () => setLassoOn(!lassoOn) }, "");
+  const undoCut = h("button", { class: "chip", type: "button", onclick: () => {
+    if (!p.shape.cuts.length) return;
+    p.shape.cuts.pop();
+    cutsChanged();
+  } }, "↶ undo");
+  const clearCuts = h("button", { class: "chip", type: "button", onclick: () => {
+    if (!p.shape.cuts.length) return;
+    if (p.shape.cuts.length > 1 && !confirm(`Remove all ${p.shape.cuts.length} cuts?`)) return;
+    p.shape.cuts = [];
+    cutsChanged();
+  } }, "clear");
+  const toolChips = chipGroup(TOOLS, lassoTool, (k) => { lassoTool = k; cropper?.setLassoTool(k); });
+  const lassoBar = h("div", { class: "lasso-bar", hidden: true },
+    toolChips, h("div", { class: "chips" }, undoCut, clearCuts,
+      h("button", { class: "chip accent", type: "button", onclick: () => setLassoOn(false) }, "done")));
+
+  function updateLassoUi() {
+    const n = p.shape.cuts.length;
+    lassoBtn.textContent = lassoOn ? "✓ done lassoing" : "✂ lasso cut";
+    lassoBtn.classList.toggle("on", lassoOn);
+    undoCut.disabled = !n;
+    clearCuts.disabled = !n;
+    lassoNote.textContent = lassoOn
+      ? "draw a loop around the part to change with your finger. it works on top of the shape above."
+      : n ? `${n} cut${n === 1 ? "" : "s"} so far. start the lasso to chip away more.`
+          : "draw around anything you don't want printed. each loop chips a bit more away - undo steps back.";
+  }
+  function cutsChanged() {
+    invalidate();
+    cropper?.refreshOverlay();
+    updateLassoUi();
+  }
+  function setLassoOn(on) {
+    if (on && !cropper) return;
+    lassoOn = on;
+    const el = document.documentElement;
+    if (on) {
+      if (!layout.dual && prepView !== "crop") showView("crop");
+      // a bigger photo to draw on (stacked layouts only)
+      if (!layout.side) { bigBefore = el.dataset.big || ""; el.dataset.big = "1"; }
+      cropper.setLasso({ tool: lassoTool, onStroke: (loop) => {
+        p.shape.cuts.push({ tool: lassoTool, pts: loop });
+        cutsChanged();
+      } });
+    } else {
+      cropper?.setLasso(null);
+      if (bigBefore !== null) { el.dataset.big = bigBefore; bigBefore = null; }
+    }
+    lassoBar.hidden = !on;
+    updateLassoUi();
+    requestAnimationFrame(() => { cropper?.relayout(); rail?.update(); });
+  }
+  updateLassoUi();
+  disposers.push(() => {
+    if (bigBefore !== null) document.documentElement.dataset.big = bigBefore;   // leaving mid-lasso
+  });
 
   screen.append(
     layout.dual
-      ? pane("view", frame("crop", cropHost), frame("result", resultHost))
+      ? pane("view", frame("crop", cropHost), frame("result", resultHost), lassoBar)
       : pane("view", h("div", { class: "view-bar" }, viewChips, bigButton()),
-          frame(null, cropHost, resultHost)),
+          frame(null, cropHost, resultHost), lassoBar),
     pane("ctrl",
+      head("colour & detail"),
+      keySliders,
+      presets,
+      paintNote,
+      head("fine tune"),
+      fineSliders,
+
       head("crop"),
       h("div", { class: "row" },
         h("button", { class: "btn grow", onclick: () => {
@@ -688,12 +816,14 @@ function renderPrep(screen, action) {
       !app.sourceHasAlpha && h("p", { class: "meta" },
         "tip: a PNG with a transparent background prints as exactly that outline."),
 
+      head("lasso cut"),
+      lassoBtn,
+      lassoNote,
+
       head("print size"),
       numField("width (mm)", p.physical_width_mm, { step: "1", min: 20, max: 256,
         onchange: (v) => { p.physical_width_mm = v; updateReadout(p.crop); invalidate(); cropper?.refreshOverlay(); } }),
-      h("p", { class: "meta" }, "A1 bed is 256 mm · A1 mini is 180 mm"),
-
-      adjustBlock),
+      h("p", { class: "meta" }, "A1 bed is 256 mm · A1 mini is 180 mm")),
   );
 
   action.append(
@@ -712,56 +842,174 @@ function bigButton() {
     } }, "⤢");
 }
 
+// ---------------------------------------------------------------- home
+const pref = (k, fb) => { try { return localStorage.getItem(`huelite.${k}`) ?? fb; } catch { return fb; } };
+const setPref = (k, v) => { try { localStorage.setItem(`huelite.${k}`, v); } catch { /* private window */ } };
+
+// A greyed-out slab, for a project that hasn't been solved yet.
+const PLACEHOLDER_ART = `<svg viewBox="0 0 160 100" aria-hidden="true">
+  <polygon points="22,56 100,38 142,52 64,74" fill="#2b2b28" stroke="#55554d" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <polygon points="22,56 64,74 64,83 22,65" fill="#222220" stroke="#55554d" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <polygon points="64,74 142,52 142,61 64,83" fill="#1b1b19" stroke="#55554d" stroke-width="1.2" stroke-dasharray="4 3"/>
+</svg>`;
+
+/** The solved print seen from the side, for the album. */
+async function sideThumbFor(rec) {
+  const [prepped, solved] = await Promise.all([store.getFile(rec.id, "prepped"), store.getFile(rec.id, "solved")]);
+  if (!prepped || !solved) return null;
+  const d = rec.data, lh = d.solve.layer_height_mm;
+  const { lut } = solve.buildLut(d.solve.filaments, lh, d.solve.band_mode || "solid");
+  return renderSideThumb({ heights: solved.heights, w: solved.w, h: solved.h, mask: prepped.mask || null, lut,
+    layerH: lh, baseMm: d.solve.base_layers * lh, physicalW: d.prep.physical_width_mm, maxCols: 320 });
+}
+let sideQueue = Promise.resolve();   // one GL context at a time
+
 function renderHome(screen) {
-  const list = h("div", { class: "projects" }, h("p", { class: "meta" }, "loading projects…"));
-  screen.append(
+  const album = pref("view", "list") === "album";
+  const holder = h("div", { class: "home-list" }, loader("loading projects", true));
+  const collapsed = new Set((() => { try { return JSON.parse(pref("collapsed", "[]")); } catch { return []; } })());
+  const keepCollapsed = () => setPref("collapsed", JSON.stringify([...collapsed]));
+
+  const viewChips = chipGroup([{ key: "list", label: "list" }, { key: "album", label: "album" }],
+    album ? "album" : "list", (k) => { setPref("view", k); render(); });
+  const newBtn = h("button", { class: "btn wide", type: "button", onclick: () => picker.click() }, "+ new from a photo");
+
+  const ctrl = pane("ctrl",
+    h("div", { class: "home-bar" }, head("projects"), viewChips),
+    album ? newBtn : null,
+    holder,
+    h("button", { class: "btn wide gap-top", onclick: () => zipPicker.click() }, "import a project (.zip)"),
+    h("p", { class: "meta" }, "zip a project folder on the Mac (Finder › Compress) and open it here, " +
+      "or save one from here and unzip it into Documents/HueLite/projects on the Mac."),
+    h("p", { class: "stamp" }, `build ${__BUILD__}`));
+  // the album is the whole screen; the list keeps the big "new" button beside it
+  screen.append(...(album ? [ctrl] : [
     pane("view", frame(null, h("button", { class: "drop", onclick: () => picker.click() },
       h("b", {}, "+ new from a photo"),
       h("span", {}, "library or camera · PNG cut-outs keep their shape"),
       h("span", {}, "turns it into a layered, multi-filament print for the A1")))),
-    pane("ctrl", head("projects"), list,
-      h("button", { class: "btn wide gap-top", onclick: () => zipPicker.click() },
-        "import a project (.zip)"),
-      h("p", { class: "meta" }, "zip a project folder on the Mac (Finder › Compress) and open it here, " +
-        "or save one from here and unzip it into Documents/HueLite/projects on the Mac."),
-      h("p", { class: "stamp" }, `build ${__BUILD__}`)));
+    ctrl]));
 
-  store.listProjects().then((recs) => {
+  const load = () => store.listProjects().then((raw) => {
+    const recs = raw.map((r) => ({ ...r, data: sanitizeProject(r.data) }));
     if (!recs.length) {
-      list.replaceChildren(h("p", { class: "meta" }, "nothing saved yet - projects you start are kept on this phone."));
+      holder.replaceChildren(h("p", { class: "meta" }, "nothing saved yet - projects you start are kept on this phone."));
       return;
     }
-    list.replaceChildren(...recs.map((rec) => {
-      const d = rec.data;
+    const folders = [...new Set(recs.map((r) => r.data.group).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    const reload = () => load();
+
+    const move = (rec) => folderSheet({ title: rec.data.name, folders, current: rec.data.group,
+      onPick: async (g) => { await store.setGroup(rec.id, g); reload(); } });
+    const remove = async (rec) => {
+      if (!confirm(`Delete "${rec.data.name}" from this phone? This can't be undone.`)) return;
+      await store.deleteProject(rec.id);
+      render();
+    };
+    const meta = (rec) => {
+      const next = STAGES.find((st) => rec.data.status[st] !== COMPLETE);
+      const when = (rec.modified || "").replace("T", "  ").slice(0, 17);
+      return `${when} · ${next ? `next: ${STAGE_LABELS[next].toLowerCase()}` : "complete"}`;
+    };
+    const pips = (rec) => h("span", { class: "pips" }, STAGES.map((st) =>
+      h("i", { class: rec.data.status[st] === COMPLETE ? "on" : "" }, STAGE_LABELS[st])));
+
+    const row = (rec) => {
       const img = h("img", { class: "thumb", alt: "" });
       if (rec.thumb) img.src = URL.createObjectURL(rec.thumb);
-      const next = STAGES.find((st) => d.status[st] !== COMPLETE);
-      const when = (rec.modified || "").replace("T", "  ").slice(0, 17);
       return h("div", { class: "project" },
-        h("button", { class: "project-open", onclick: () => openProject(rec.id) },
-          img,
-          h("span", { class: "project-text" },
-            h("b", {}, d.name),
-            h("span", { class: "meta" }, `${when} · ${next ? `next: ${STAGE_LABELS[next].toLowerCase()}` : "complete"}`),
-            h("span", { class: "pips" }, STAGES.map((st) =>
-              h("i", { class: d.status[st] === COMPLETE ? "on" : "" }, STAGE_LABELS[st]))))),
+        h("button", { class: "project-open", onclick: () => openProject(rec.id) }, img,
+          h("span", { class: "project-text" }, h("b", {}, rec.data.name), h("span", { class: "meta" }, meta(rec)), pips(rec))),
+        h("button", { class: "project-del", title: "move to a folder", onclick: () => move(rec) }, "move"),
         h("button", { class: "project-del", title: "save as .zip", onclick: () => exportProjectZip(rec.id) }, "zip"),
-        h("button", { class: "project-del", title: "delete", onclick: async () => {
-          if (!confirm(`Delete "${d.name}" from this phone? This can't be undone.`)) return;
-          await store.deleteProject(rec.id);
-          render();
-        } }, "✕"));
-    }));
+        h("button", { class: "project-del", title: "delete", onclick: () => remove(rec) }, "✕"));
+    };
+
+    const card = (rec) => {
+      const img = h("img", { alt: "", class: "side-img" });
+      const ph = h("div", { class: "ph" });
+      ph.innerHTML = PLACEHOLDER_ART;             // a fixed string above, never user data
+      const art = h("div", { class: "card-art" }, ph, img,
+        h("span", { class: "ph-cap" }, rec.data.status.solve === COMPLETE ? "" : "not solved yet"));
+      if (rec.data.status.solve === COMPLETE) {
+        sideQueue = sideQueue.then(async () => {
+          let blob = await store.getFile(rec.id, "side");
+          if (!blob) {
+            blob = await sideThumbFor(rec);
+            if (blob) await store.putFile(rec.id, "side", blob);
+          }
+          if (blob) {
+            const url = URL.createObjectURL(blob);
+            img.onload = () => { art.classList.add("has-art"); URL.revokeObjectURL(url); };
+            img.src = url;
+          }
+        }).catch((err) => console.warn("no side view for", rec.data.name, err));
+      }
+      return h("div", { class: "card" },
+        h("button", { class: "card-open", onclick: () => openProject(rec.id) }, art,
+          h("span", { class: "card-text" }, h("b", {}, rec.data.name), h("span", { class: "meta" }, meta(rec)), pips(rec))),
+        h("div", { class: "card-tools" },
+          h("button", { type: "button", onclick: () => move(rec) }, "move"),
+          h("button", { type: "button", onclick: () => exportProjectZip(rec.id) }, "zip"),
+          h("button", { type: "button", onclick: () => remove(rec) }, "delete")));
+    };
+
+    const groupHead = (g, n) => h("div", { class: "group-head" },
+      h("button", { class: "group-toggle", type: "button", onclick: () => {
+        if (collapsed.has(g)) collapsed.delete(g); else collapsed.add(g);
+        keepCollapsed();
+        reload();
+      } }, `${collapsed.has(g) ? "▸" : "▾"}  ${g || "no folder"}  (${n})`),
+      g ? h("button", { class: "chip", type: "button", onclick: async () => {
+        const next = prompt("Folder name", g);
+        if (next === null) return;
+        await store.renameGroup(g, next.trim().slice(0, 60));
+        reload();
+      } }, "rename") : null,
+      g ? h("button", { class: "chip", type: "button", onclick: async () => {
+        if (!confirm(`Take everything out of "${g}"? The projects stay; only the folder goes.`)) return;
+        await store.renameGroup(g, "");
+        reload();
+      } }, "ungroup") : null);
+
+    const nodes = [];
+    for (const g of [...folders, ""]) {
+      const items = recs.filter((r) => r.data.group === g);
+      if (!items.length) continue;
+      if (folders.length) nodes.push(groupHead(g, items.length));      // no folders yet: a flat list
+      if (!collapsed.has(g)) nodes.push(h("div", { class: album ? "album-grid" : "projects" }, items.map(album ? card : row)));
+    }
+    holder.replaceChildren(...nodes);
   }).catch((err) => {
     console.error(err);
-    list.replaceChildren(h("p", { class: "meta" }, "couldn't read saved projects on this browser."));
+    holder.replaceChildren(h("p", { class: "meta" }, "couldn't read saved projects on this browser."));
   });
+  load();
+}
+
+/** The print outline for an RGBA sample of the crop: the base shape the chips
+ *  chose, then the hand cuts on top of it. null = print the whole crop. */
+function buildMask(sample, crop) {
+  const p = app.project.prep;
+  const opts = { tolerance: p.shape.tolerance, pxPerMm: sample.width / p.physical_width_mm,
+                 minFeatureMm: p.shape.min_feature_mm };
+  let m = shape.build(p.shape.mode, sample, opts);
+  const cuts = p.shape.cuts;
+  if (cuts?.length && cropper) {
+    const [cx, cy, cw, ch] = crop, { width: w, height: hh } = sample;
+    m = shape.applyCuts(m, w, hh, cuts, (u, v) => {
+      const [ox, oy] = cropper.toOriented(u, v);
+      return [(ox - cx) * w / cw, (oy - cy) * hh / ch];
+    });
+    m = shape.clean(m, w, hh, opts.pxPerMm, opts.minFeatureMm);
+  }
+  return m;
 }
 
 function shapeVerdict(mode, m) {
   if (!m) return "prints the whole crop";
   const cover = shape.coverage(m);
-  if (cover < 0.01) return "nothing left to print - lower the tolerance";
+  if (cover < 0.01) return "nothing left to print - lower the tolerance, or undo a cut";
   if (mode === "knockout" && cover > 0.985) return "no background found - raise the tolerance, or crop tighter";
   return `prints ${(cover * 100).toFixed(0)}% of the crop · checkered = no plate`;
 }
@@ -774,8 +1022,7 @@ async function commitPrep() {
     const w = out.width, hh = out.height;
     const ctx = out.getContext("2d", { willReadFrequently: true });
     const data = ctx.getImageData(0, 0, w, hh);
-    const mask = shape.build(p.shape.mode, data, { tolerance: p.shape.tolerance,
-      pxPerMm: w / p.physical_width_mm, minFeatureMm: p.shape.min_feature_mm });
+    const mask = buildMask(data, cropper.getCrop());
     if (mask && shape.coverage(mask) < 0.01) {
       toast("The shape left nothing to print", 2600);
       return;
@@ -794,6 +1041,7 @@ async function commitPrep() {
     const id = app.project.id;
     await store.putFile(id, "prepped", { w, h: hh, rgba: prepped.data, mask });
     await store.deleteFile(id, "solved");
+    await store.deleteFile(id, "side");
     const shown = mask ? canvasOf(checkered(mask, w, hh, prepped)) : out;
     await persistNow(await thumbBlob(shown));
     go("solve");
@@ -844,11 +1092,21 @@ function renderSolve(screen, action) {
   const { s } = solveSettings();
   const stock = DEFAULT_FILAMENTS.map((f) => f.hex.toUpperCase());
   if (!s.colours_seeded && s.filaments.every((f, i) => f.hex.toUpperCase() === stock[i])) {
-    importColours();
+    fitColours();
   }
   s.colours_seeded = true;
 
   const view = h("div", { class: "solve-view" });
+  // one 3D view for the whole screen: made on first use, rebuilt in place as
+  // the settings change, released when the screen goes
+  let angle = null;
+  const angleView = () => {
+    if (angle === null) {
+      angle = createView3D() || false;
+      if (angle) disposers.push(() => angle.destroy());
+    }
+    return angle;
+  };
   const ramp = h("div", { class: "ramp" });
   const readout = h("div");
   let live = null;
@@ -870,6 +1128,12 @@ function renderSolve(screen, action) {
     } else if (kind === "height") {
       el = canvasOf(mesh.renderHeight({ heights: live.heights, w: proxy.w, h: proxy.h, mask: proxy.mask }));
     } else if (kind === "oblique") {
+      const gl = angleView();
+      if (gl) {
+        gl.set({ heights: live.heights, w: proxy.w, h: proxy.h, mask: proxy.mask, lut: live.lut,
+                 layerH: lh, baseMm, physicalW: mm, maxCols: SOLVE_PROXY });
+        return gl.el;
+      }
       el = mesh.renderOblique({ heights: live.heights, w: proxy.w, h: proxy.h, lut: live.lut, mask: proxy.mask,
         baseHex: s.filaments[0].hex, layerH: lh, baseMm, physicalW: mm, targetWidth: 640, maxCols: 180,
         shaded: solveShaded });
@@ -907,6 +1171,7 @@ function renderSolve(screen, action) {
       ["distinct", `${distinct} of ${t.colour_layers + 1} tones${waste > 6 ? ` · ${waste} duplicated, trim a band` : ""}`],
     ]));
     ramp.replaceChildren(...live.lut.map((c) => h("i", { style: `background:${solve.rgbToHex(c)}` })));
+    updateStrips();
     draw();
   };
   const queue = () => { invalidate(); clearTimeout(solveTimer); solveTimer = setTimeout(recompute, 150); };
@@ -914,9 +1179,9 @@ function renderSolve(screen, action) {
   const viewChips = chipGroup([
     { key: "sim", label: "print" }, { key: "oblique", label: "angle" },
     { key: "height", label: "height" }, { key: "source", label: "photo" },
-  ], solveView, (k) => { solveView = k; draw(); });
+  ], solveView, (k) => { solveView = k; draw(); pulse(view); });
   const lightChip = h("button", { class: `chip${solveShaded ? " on" : ""}`, type: "button",
-    title: "Lighting on the preview. Off shows every colour flat, exactly as chosen.",
+    title: "Relief lighting on the top-down print. Off shows every tone flat, exactly as it prints.",
     onclick: () => { solveShaded = !solveShaded; lightChip.classList.toggle("on", solveShaded); draw(); } },
     "light");
 
@@ -974,6 +1239,7 @@ function renderSolve(screen, action) {
       photo: photoPicker(),
       onChange: (hex) => {
         f.hex = hex; f.name = "";
+        s.colours_auto = false;   // picked by hand: leave it alone from here on
         btn.style.background = hex;
         btn.setAttribute("aria-label", `slot ${f.slot} colour ${hex}`);
         queue();
@@ -983,25 +1249,48 @@ function renderSolve(screen, action) {
   };
 
   // filaments
-  const filTable = () => h("div", { class: "fil-table" },
-    h("span"), h("span", { class: "th" }, "colour"), h("span", { class: "th" }, "TD mm"),
-    h("span", { class: "th" }, "layers"),
-    s.filaments.flatMap((f, i) => [
-      h("span", { class: "idx" }, String(f.slot)),
-      h("button", { class: "sw", type: "button", style: `background:${f.hex}`,
-        "aria-label": `slot ${f.slot} colour ${f.hex}`, onclick: (e) => openColour(f, i, e.currentTarget) }),
-      h("input", { class: "val", type: "number", inputmode: "decimal", step: "0.05", min: "0.05", max: "6",
-        value: Number(f.td_mm).toFixed(2), onchange: (e) => {
-          const v = Math.min(6, Math.max(0.05, parseFloat(e.target.value) || f.td_mm));
-          f.td_mm = v; e.target.value = v.toFixed(2); queue();
-        } }),
-      h("input", { class: "val", type: "number", inputmode: "numeric", step: "1", min: "0", max: "120",
-        value: String(f.band_layers), onchange: (e) => {
-          const v = Math.min(120, Math.max(0, parseInt(e.target.value, 10) || 0));
-          f.band_layers = v; e.target.value = String(v); queue();
-        } }),
-    ]));
+  let strips = [];
+  /** the strip under each swatch: what that band really prints as, when that
+   *  isn't simply the swatch */
+  const updateStrips = () => {
+    strips.forEach((el, i) => {
+      const f = s.filaments[i];
+      const pr = f && printedAs(i, f.hex);
+      const was = f && hexToRgb(f.hex);
+      el.hidden = !pr || hexToRgb(pr).every((c, k) => Math.abs(c - was[k]) <= 3);
+      if (pr) el.style.background = pr;
+    });
+  };
+  /** colours that were picked by the fit follow the stack when it changes */
+  const refit = () => { if (s.colours_auto) { fitColours(); refitTable(); } };
+  const filTable = () => {
+    strips = [];
+    const table = h("div", { class: "fil-table" },
+      h("span"), h("span", { class: "th" }, "colour"), h("span", { class: "th" }, "TD mm"),
+      h("span", { class: "th" }, "layers"),
+      s.filaments.flatMap((f, i) => {
+        const strip = h("i", { class: "pr", hidden: true });
+        strips.push(strip);
+        return [
+          h("span", { class: "idx" }, String(f.slot)),
+          h("button", { class: "sw", type: "button", style: `background:${f.hex}`,
+            "aria-label": `slot ${f.slot} colour ${f.hex}`, onclick: (e) => openColour(f, i, e.currentTarget) }, strip),
+          h("input", { class: "val", type: "number", inputmode: "decimal", step: "0.05", min: "0.05", max: "6",
+            value: Number(f.td_mm).toFixed(2), onchange: (e) => {
+              const v = Math.min(6, Math.max(0.05, parseFloat(e.target.value) || f.td_mm));
+              f.td_mm = v; e.target.value = v.toFixed(2); refit(); queue();
+            } }),
+          h("input", { class: "val", type: "number", inputmode: "numeric", step: "1", min: "0", max: "120",
+            value: String(f.band_layers), onchange: (e) => {
+              const v = Math.min(120, Math.max(0, parseInt(e.target.value, 10) || 0));
+              f.band_layers = v; e.target.value = String(v); refit(); queue();
+            } }),
+        ];
+      }));
+    return table;
+  };
   let filEl = filTable();
+  const refitTable = () => { const fresh = filTable(); filEl.replaceWith(fresh); filEl = fresh; };
 
   const borderWidth = numField("rim width (mm)", s.border.width_mm ?? 3, { step: "0.5", min: 0.4, max: 15,
     onchange: (v) => { s.border.width_mm = v; queue(); } });
@@ -1023,8 +1312,10 @@ function renderSolve(screen, action) {
       h("p", { class: "meta" }, "slot 1 prints lowest · tap a swatch to choose its colour"),
       filEl,
       h("button", { class: "btn wide gap-top", onclick: () => {
-        importColours(); const fresh = filTable(); filEl.replaceWith(fresh); filEl = fresh; queue();
-      } }, "import colours from prep"),
+        fitColours(); refitTable(); queue();
+      } }, "fit colours to photo"),
+      h("p", { class: "meta" }, "picks the filament colours that make the printed stack look most like your prepped photo. " +
+        "the strip under a swatch is what that band really prints as."),
 
       head("layers"),
       numField("layer height (mm)", s.layer_height_mm, { step: "0.02", min: 0.04, max: 0.3, fmt: (v) => v.toFixed(2),
@@ -1035,7 +1326,7 @@ function renderSolve(screen, action) {
 
       head("colour"),
       chipGroup([{ key: "solid", label: "solid bands" }, { key: "blend", label: "translucent blend" }],
-        s.band_mode || "solid", (k) => { s.band_mode = k; queue(); }),
+        s.band_mode || "solid", (k) => { s.band_mode = k; refit(); queue(); }),
       h("div", { class: "gap-top" },
         chipGroup([{ key: "bayer8", label: "dither on" }, { key: "none", label: "dither off" }],
           s.dither === "none" ? "none" : "bayer8", (k) => { s.dither = k; queue(); })),
@@ -1059,10 +1350,19 @@ function renderSolve(screen, action) {
   requestAnimationFrame(recompute);
 }
 
-function importColours() {
-  const { s } = solveSettings();
-  const cols = solve.importColours(app.prepped.data.data, app.prepped.mask, s.filaments.length);
-  cols.forEach((hex, i) => { if (s.filaments[i]) { s.filaments[i].hex = hex; s.filaments[i].name = ""; } });
+/** Set every slot's colour to what makes the printed stack match the photo
+ *  (see solve.fitFilaments), not just the photo's own colours - a stack
+ *  doesn't print its swatches, and translucent bands in particular never
+ *  reach theirs. */
+function fitColours() {
+  const { s, lh, mode } = solveSettings();
+  const { data, mask } = app.prepped;
+  const seeds = solve.importColours(data.data, mask, s.filaments.length);
+  const start = s.filaments.map((f, i) => seeds[i] ?? f.hex);
+  const fitted = solve.fitFilaments(data.data, mask, s.filaments.map((f, i) => ({ ...f, hex: start[i] })),
+    lh, mode, { start });
+  fitted.forEach((hex, i) => { s.filaments[i].hex = hex; s.filaments[i].name = ""; });
+  s.colours_auto = true;
 }
 
 async function commitSolve() {
@@ -1083,8 +1383,12 @@ async function commitSolve() {
     lastFiles = [];
     const { heights, w, h: hh, lut } = app.solved;
     await store.putFile(app.project.id, "solved", { w, h: hh, heights });
+    // the album's side view; a missing one is made later, so never block on it
+    renderSideThumb({ heights, w, h: hh, mask: app.prepped.mask, lut, layerH: lh, baseMm: baseLayers * lh,
+      physicalW: app.project.prep.physical_width_mm, maxCols: 320 })
+      .then((blob) => blob && store.putFile(app.project.id, "side", blob)).catch(() => {});
     const top = canvasOf(mesh.renderTop({ heights, w, h: hh, lut, mask: app.prepped.mask, layerH: lh,
-      baseMm: baseLayers * lh, cellMm: app.project.prep.physical_width_mm / w }));
+      baseMm: baseLayers * lh, cellMm: app.project.prep.physical_width_mm / w, shaded: false }));
     await persistNow(await thumbBlob(top));
     go("export");
   });
@@ -1109,12 +1413,21 @@ function renderExport(screen, action) {
   const mask = app.prepped.mask;
   const ex = app.project.export;
 
+  // flat colours: a top-down view should show exactly what each tone is
   const top = canvasOf(mesh.renderTop({ heights, w, h: hh, lut, mask, layerH: lh,
-    baseMm: baseLayers * lh, cellMm: mm / w }));
+    baseMm: baseLayers * lh, cellMm: mm / w, shaded: false }));
   top.className = "preview-out";
-  const oblique = mesh.renderOblique({ heights, w, h: hh, lut, mask, baseHex: s.filaments[0].hex,
-    layerH: lh, baseMm: baseLayers * lh, physicalW: mm, targetWidth: 640 });
-  oblique.className = "preview-out";
+  let oblique;
+  const gl3 = createView3D();
+  if (gl3) {
+    disposers.push(() => gl3.destroy());
+    gl3.set({ heights, w, h: hh, mask, lut, layerH: lh, baseMm: baseLayers * lh, physicalW: mm, maxCols: 800 });
+    oblique = gl3.el;
+  } else {
+    oblique = mesh.renderOblique({ heights, w, h: hh, lut, mask, baseHex: s.filaments[0].hex,
+      layerH: lh, baseMm: baseLayers * lh, physicalW: mm, targetWidth: 640 });
+    oblique.className = "preview-out";
+  }
 
   const stats = h("p", { class: "meta" }, "building mesh…");
   const restat = () => {
@@ -1162,7 +1475,7 @@ function renderExport(screen, action) {
     oblique.hidden = !layout.dual && exportView !== "angle";
   };
   const exportChips = chipGroup([{ key: "top", label: "top down" }, { key: "angle", label: "angle" }],
-    exportView, (k) => { exportView = k; showExport(); });
+    exportView, (k) => { exportView = k; showExport(); pulse(k === "top" ? top : oblique); });
   showExport();
   screen.append(
     layout.dual

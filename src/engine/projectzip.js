@@ -13,6 +13,7 @@
 import * as png from "./png.js";
 import { makeZip, readZip } from "./zip.js";
 import { buildLut } from "./solve.js";
+import { sanitizeProject } from "../state.js";
 
 /** Same as core/project.py slugify. */
 export function slugify(name) {
@@ -97,7 +98,7 @@ export async function unpack(bytes) {
   if (!jsonName) throw new Error("no project.json in that zip - is it a HueLite project?");
   const prefix = jsonName.slice(0, -"project.json".length);
   const read = async (name) => (files.has(prefix + name) ? files.get(prefix + name)() : null);
-  const data = JSON.parse(new TextDecoder().decode(await read("project.json")));
+  const data = sanitizeProject(JSON.parse(new TextDecoder().decode(await read("project.json"))));
 
   let srcName = data.source?.filename;
   if (!srcName || !files.has(prefix + srcName)) {

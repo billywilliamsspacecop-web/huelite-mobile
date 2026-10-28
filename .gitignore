@@ -2,3 +2,5 @@ node_modules/
 dist/
 ios/
 .DS_Store
+RefPhotos/
+.harness/
