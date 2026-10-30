@@ -19,6 +19,7 @@
 // relief reads.
 
 import { downsampleMask, downsampleMax } from "./mesh.js";
+import { play } from "../sfx.js";
 
 const EMPTY = 65535;          // height-texture value for "no print here"
 const RELIEFS = [1, 3, 6];    // z stretch: true scale, then easier to read
@@ -431,11 +432,13 @@ export function createView3D({ onHint = true, pose = null, offscreen = false } =
     p.x = e.clientX; p.y = e.clientY;
     if (Math.abs(dx) + Math.abs(dy) > 1) tapMoved = true;
     if (pointers.size === 1) {
+      if (!pose) play("orbit", ((cam.az % 6.2832) + 6.2832) % 6.2832 / 6.2832);
       cam.az -= dx * 0.008;
       cam.el = Math.min(MAX_EL, Math.max(MIN_EL, cam.el + dy * 0.006));
     } else if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
       const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (!pose) play("zoom", (cam.zoom - 0.25) / 2.75);
       if (pinch > 0 && d > 0) cam.zoom = Math.min(3, Math.max(0.25, cam.zoom * (pinch / d)));
       pinch = d;
     }

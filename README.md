@@ -76,6 +76,35 @@ Colours - what the preview means:
 Tapping a swatch opens an in-app picker: exported colour next to "prints
 as", a palette from the photo, tap-the-photo, hue + saturation/value, hex.
 
+## Sound
+
+`src/sfx.js` - 47 short sounds synthesized live with WebAudio (oscillators and
+filtered noise; no audio files, so nothing to download and it works offline).
+`play(name, arg)` is the whole API and rate-limits itself.
+
+- **Every press** has a sound by element type (a global pointer-down listener
+  in `main.js`): taps, chips, stage tabs, the main button's two-note chirp,
+  opening a project, a low buzz for delete, a chirp for zip. A locked stage
+  buzzes instead.
+- **Sliders** tick, and the tick climbs in pitch with the value; grabbing and
+  letting go pop; hitting an end stop thumps. Crop, the lasso stroke, 3D
+  orbit and pinch-zoom tick too.
+- **Pages**: a "whoong" that rises going forward and falls going back, then a
+  soft ping for each control group as it lands. The chimes sit on the current
+  stage's note (Prep C5, Solve E5, Export G5), so the app rises in pitch as a
+  print moves toward the printer.
+- **Loading**: a boot blip, then four layers stacking in time with the
+  loader's animation, then a trill when done (a low buzz if it failed).
+- **Moments**: lasso on/off, a scissor snip for a cut, a rising sweep for put
+  back, a shutter for a new photo, a fanfare on export, a bell when a new
+  version is ready, colour picks pitched by lightness.
+
+The ♪ button in the header mutes everything; home has on/off, a volume slider
+and "play a demo". Browsers keep audio locked until a touch, so the first tap
+only unlocks it (a sound asked for long before is never replayed late).
+`_LIB` and `_useContext` let a test render any sound into an
+OfflineAudioContext; all 47 were checked for NaNs, clipping, silence and length.
+
 ## Folders and the album
 
 Home has a **list / album** switch. Projects can be filed into folders: "move"

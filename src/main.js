@@ -8,6 +8,7 @@ import * as bambu3mf from "./engine/bambu3mf.js";
 import * as imaging from "./engine/imaging.js";
 import { createView3D, renderSideThumb } from "./engine/view3d.js";
 import { attachSwipe } from "./swipe.js";
+import * as sfx from "./sfx.js";
 import * as store from "./store.js";
 import * as projectzip from "./engine/projectzip.js";
 import { uuid } from "./state.js";
@@ -139,6 +140,7 @@ const STAGE_SUB = {
 
 let toastTimer;
 function toast(msg, ms = 1800) {
+  sfx.play(/couldn't|can't|failed|too big|missing|nothing|no button|not a|damaged|unsupported/i.test(msg) ? "error" : "toast");
   let t = document.querySelector(".toast");
   if (!t) { t = h("div", { class: "toast" }); document.body.append(t); }
   t.textContent = msg;
@@ -157,6 +159,7 @@ function loader(label, mini = false) {
 
 /** Re-run a one-shot CSS animation (view swaps) by restarting its class. */
 function pulse(el, cls = "swap") {
+  sfx.play("swap");
   el.classList.remove(cls);
   void el.offsetWidth;
   el.classList.add(cls);
@@ -166,8 +169,16 @@ function pulse(el, cls = "swap") {
 async function busy(label, fn) {
   const veil = h("div", { class: "veil" }, loader(label));
   document.body.append(veil);
+  const done = sfx.loading();          // boot blip, then layers stacking in time with the loader
   await nextFrame();
-  try { return await fn(); } finally { veil.remove(); }
+  try {
+    const result = await fn();
+    done(true);
+    return result;
+  } catch (err) {
+    done(false);
+    throw err;
+  } finally { veil.remove(); }
 }
 
 async function sourceHasAlpha(bmp) {
@@ -201,6 +212,7 @@ const picker = h("input", { type: "file", accept: "image/*", hidden: true,
       aspectKey = "free";
       prepView = "crop";
       preSuggest = null;
+      sfx.play("photo");
       go("prep");
       await store.putFile(app.project.id, "source", file);
       await persistNow(await thumbBlob(bmp));
@@ -438,6 +450,7 @@ function render() {
   enter = null;
   root.dataset.stage = app.stage;
   document.documentElement.dataset.stage = app.stage;
+  sfx.setStage(app.stage);
 
   const home = !app.project;
   root.dataset.home = home ? "1" : "";
@@ -446,9 +459,11 @@ function render() {
   const header = h("header", { class: "top" },
     h("div", { class: "top-row" },
       h("h1", { class: "stage-title" }, home ? "HueLite" : `0${n} ${STAGE_LABELS[app.stage]}`),
-      app.project
-        ? h("button", { class: "brand link", onclick: closeProject }, "☰ projects")
-        : h("div", { class: "brand" }, "photo → layered print")),
+      h("div", { class: "top-right" },
+        soundButton(),
+        app.project
+          ? h("button", { class: "brand link", onclick: closeProject }, "☰ projects")
+          : h("div", { class: "brand" }, "photo → layered print"))),
     home
       ? h("div", { class: "top-sub" }, "saved on this phone")
       : h("div", { class: "top-sub" },
@@ -466,7 +481,15 @@ function render() {
 
   const ctrl = screen.querySelector(".pane.ctrl");
   if (ctrl) rail = attachRail(ctrl, screen);
-  screen.querySelectorAll(".ctrl-inner > .group").forEach((g, i) => g.style.setProperty("--i", String(Math.min(i, 9))));
+  const groups = screen.querySelectorAll(".ctrl-inner > .group");
+  groups.forEach((g, i) => g.style.setProperty("--i", String(Math.min(i, 9))));
+  // the page arrives: a whoong that rises going forward and falls going back,
+  // then a soft ping for each control group as it lands
+  const how = root.dataset.enter;
+  if (how) {
+    sfx.play(how === "fwd" ? "pageFwd" : how === "back" ? "pageBack" : "pageRise");
+    sfx.play("arrive", groups.length);
+  }
 
   // swipe left / right between stages
   if (app.project) {
@@ -477,7 +500,7 @@ function render() {
       onGo: (dir) => go(STAGES[at + dir]),
       onBlocked: (dir) => {
         const to = STAGES[at + dir];
-        if (to && !canOpen(to)) toast(`Finish ${STAGE_LABELS[STAGE_REQUIRES[to]]} first`);
+        if (to && !canOpen(to)) { sfx.play("blocked"); toast(`Finish ${STAGE_LABELS[STAGE_REQUIRES[to]]} first`); }
       },
     }));
   }
@@ -490,7 +513,7 @@ function renderStepper() {
     const cls = ["step", s === app.stage && "active", done && "done", locked && "locked"]
       .filter(Boolean).join(" ");
     return h("button", { class: cls, onclick: () => {
-      if (locked) return toast(`Finish ${STAGE_LABELS[STAGE_REQUIRES[s]]} first`);
+      if (locked) { sfx.play("blocked"); return toast(`Finish ${STAGE_LABELS[STAGE_REQUIRES[s]]} first`); }
       go(s);
     } }, h("span", { class: "num" }, `0${i + 1}`), STAGE_LABELS[s]);
   }));
@@ -727,12 +750,14 @@ function renderPrep(screen, action) {
   const lassoBtn = h("button", { class: "btn wide lasso-btn", type: "button", onclick: () => setLassoOn(!lassoOn) }, "");
   const undoCut = h("button", { class: "chip", type: "button", onclick: () => {
     if (!p.shape.cuts.length) return;
+    sfx.play("undo");
     p.shape.cuts.pop();
     cutsChanged();
   } }, "↶ undo");
   const clearCuts = h("button", { class: "chip", type: "button", onclick: () => {
     if (!p.shape.cuts.length) return;
     if (p.shape.cuts.length > 1 && !confirm(`Remove all ${p.shape.cuts.length} cuts?`)) return;
+    sfx.play("clear");
     p.shape.cuts = [];
     cutsChanged();
   } }, "clear");
@@ -759,6 +784,7 @@ function renderPrep(screen, action) {
   }
   function setLassoOn(on) {
     if (on && !cropper) return;
+    if (on !== lassoOn) sfx.play(on ? "lassoOn" : "lassoOff");
     lassoOn = on;
     const el = document.documentElement;
     if (on) {
@@ -766,6 +792,7 @@ function renderPrep(screen, action) {
       // a bigger photo to draw on (stacked layouts only)
       if (!layout.side) { bigBefore = el.dataset.big || ""; el.dataset.big = "1"; }
       cropper.setLasso({ tool: lassoTool, onStroke: (loop) => {
+        sfx.play(lassoTool === "back" ? "restore" : lassoTool === "only" ? "keep" : "snip");
         p.shape.cuts.push({ tool: lassoTool, pts: loop });
         cutsChanged();
       } });
@@ -878,7 +905,16 @@ function renderHome(screen) {
     h("div", { class: "home-bar" }, head("projects"), viewChips),
     album ? newBtn : null,
     holder,
-    h("button", { class: "btn wide gap-top", onclick: () => zipPicker.click() }, "import a project (.zip)"),
+    head("sound"),
+    chipGroup([{ key: "on", label: "sound on" }, { key: "off", label: "sound off" }], sfx.isEnabled() ? "on" : "off",
+      (k) => { if (k === "on") sfx.setEnabled(true); else { sfx.play("off"); sfx.setEnabled(false); } render(); }),
+    rangeField("volume", Math.round(sfx.getVolume() * 100), { min: 0, max: 100, fmt: (v) => `${v}%`,
+      oninput: (v) => sfx.setVolume(v / 100) }),
+    h("button", { class: "btn wide gap-top", type: "button", onclick: () => sfx.demo() }, "play a demo of the sounds"),
+    h("p", { class: "meta" }, "taps, slider ticks, page whooshes, loading beeps, lasso snips, a fanfare on export. " +
+      "the ♪ button in the corner mutes everything."),
+    head("files"),
+    h("button", { class: "btn wide", onclick: () => zipPicker.click() }, "import a project (.zip)"),
     h("p", { class: "meta" }, "zip a project folder on the Mac (Finder › Compress) and open it here, " +
       "or save one from here and unzip it into Documents/HueLite/projects on the Mac."),
     h("p", { class: "stamp" }, `build ${__BUILD__}`));
@@ -903,6 +939,7 @@ function renderHome(screen) {
       onPick: async (g) => { await store.setGroup(rec.id, g); reload(); } });
     const remove = async (rec) => {
       if (!confirm(`Delete "${rec.data.name}" from this phone? This can't be undone.`)) return;
+      sfx.play("delete");
       await store.deleteProject(rec.id);
       render();
     };
@@ -1543,6 +1580,7 @@ function renderExport(screen, action) {
     setStatus("export", COMPLETE);
     refreshStepper();
     showFiles();
+    sfx.play("fanfare");
     await deliver(files);
   }
 }
@@ -1570,6 +1608,40 @@ async function deliver(files) {
   toast(`saved ${main.name} to downloads`, 2600);
 }
 
+// ---------------------------------------------------------------- sound
+/** Speaker button in the header: tap to mute / unmute. */
+function soundButton() {
+  const label = () => (sfx.isEnabled() ? "♪" : "♪ ✕");
+  const b = h("button", { class: "brand link snd-btn", type: "button", "aria-label": "sound on or off",
+    onclick: () => { sfx.toggle(); b.textContent = label(); b.classList.toggle("off", !sfx.isEnabled()); } }, label());
+  b.classList.toggle("off", !sfx.isEnabled());
+  return b;
+}
+
+/** What a press on this element should sound like, or null where something
+ *  else already makes the sound (sliders, swatch sheets) or it is silent. */
+function soundFor(el) {
+  const b = el.closest("button");
+  if (!b || b.disabled || b.closest(".sheet-backdrop, .loader, .toast")) return null;
+  if (b.matches(".slider-step, .pal-sw, .fil-table .sw, .rail-btn")) return b.matches(".rail-btn") ? "tap" : null;
+  if (b.matches(".step")) return b.classList.contains("locked") ? null : "tab";   // locked: "blocked" plays
+  if (b.matches(".btn.primary")) return "primary";
+  if (b.matches(".chip")) return "chip";
+  if (b.matches(".project-open, .card-open")) return "open";
+  if (b.matches(".project-del, .card-tools button")) {
+    const t = b.textContent.trim().toLowerCase();
+    return t === "✕" || t === "delete" ? "warn" : t === "zip" ? "zip" : "tap";
+  }
+  return "tap";
+}
+// Press-down, not click: the sound lands with the finger. On the document, so
+// sheets and the update bar (which live outside the app root) are covered too.
+document.addEventListener("pointerdown", (e) => {
+  const name = soundFor(e.target);
+  if (name) sfx.play(name);
+}, true);
+document.addEventListener("change", (e) => { if (e.target.matches?.("input.val")) sfx.play("chip"); }, true);
+
 render();
 
 // ---------------------------------------------------------------- updates
@@ -1579,6 +1651,7 @@ render();
 // a refresh. Production builds only.
 function showUpdateBar() {
   if (document.querySelector(".update-bar")) return;
+  sfx.play("chime");
   document.body.append(h("div", { class: "update-bar" },
     h("span", {}, "a new version of HueLite is ready"),
     h("button", { type: "button", onclick: () => location.reload() }, "reload")));

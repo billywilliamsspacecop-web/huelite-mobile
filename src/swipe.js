@@ -6,6 +6,8 @@
 // the scroll rail, the colour sheet) is left alone, and a mostly-vertical
 // drag is just a scroll and never becomes a swipe.
 
+import { play } from "./sfx.js";
+
 const IGNORE = "input, textarea, select, canvas, .slider, .crop-wrap, .gl-wrap, .lasso-layer, " +
                ".rail, .sheet, .sheet-backdrop, .eye-box, .sv-box, [data-noswipe]";
 
@@ -26,6 +28,7 @@ export function attachSwipe(host, { drag, canGo, onGo, onBlocked }) {
     drag.style.opacity = "";
   };
   const springBack = () => {
+    play("release");
     settle(420, "cubic-bezier(.2, 1.3, .4, 1)");
     drag.style.transform = "translate3d(0, 0, 0)";
     drag.style.opacity = "1";
@@ -49,6 +52,7 @@ export function attachSwipe(host, { drag, canGo, onGo, onBlocked }) {
       try { host.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
       drag.classList.add("dragging");
       drag.style.transition = "none";
+      play("drag");
     }
     s.dx = dx;
     // where a stage can't be opened the screen resists, like a rubber band
