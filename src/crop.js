@@ -7,7 +7,6 @@
 // the photo is rotated, flipped or re-cropped.
 
 import { polygonArea, simplify } from "./engine/shape.js";
-import { play } from "./sfx.js";
 
 const MIN_CROP_PX = 64;
 const CROP_PAD_PX = 18;        // keep in sync with .crop-wrap padding
@@ -137,7 +136,6 @@ export function createCropper(container, bitmap, { rotateDeg = 0, flipH = false,
   }
 
   function changed() {
-    play("crop", (rect.w * rect.h) / (oriented.width * oriented.height));
     place();
     onChange(api.getCrop());
     repaint();
@@ -250,8 +248,6 @@ export function createCropper(container, bitmap, { rotateDeg = 0, flipH = false,
     const p = here(e), last = stroke.pts[stroke.pts.length - 1];
     if (Math.hypot(p[0] - last[0], p[1] - last[1]) < 2) return;
     stroke.pts.push(p);
-    stroke.len = (stroke.len || 0) + Math.hypot(p[0] - last[0], p[1] - last[1]);
-    play("lassoDraw", stroke.len / 700);
     paintStroke();
   });
   const lassoEnd = (e, cancelled) => {

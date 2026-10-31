@@ -1,12 +1,28 @@
-// Bambu Studio project (.3mf) and STL writers. Port of the desktop's
-// core/bambu3mf.py and mesh.write_stl - same package layout, same XML,
-// so a phone export opens in Studio exactly like a Mac one.
+// Bambu Studio project (.3mf) and STL writers for the Bambu Lab A1. Port of the desktop's
+// core/bambu3mf.py and mesh.write_stl - same package layout and XML, with two
+// differences that make Studio actually honour the file (below).
+//
+// Why a plain export used to open in Studio with the wrong filaments: Studio
+// only trusts a project's settings when the file says it came from Bambu
+// Studio (the Application line) AND the settings are a complete, consistent
+// config. Ours said "HueLite" and carried a four-line config, so Studio showed
+// "The 3mf file has invalid config, load geometry data only", threw away the
+// filament colours and the 0.08 mm layer height, and gave the parts whichever
+// filaments the open project already had (so a 4-colour print lost its 4th
+// colour and a lot of detail). Now: the Application line is Studio's, and the
+// config is a real A1 one (bambu_a1.js) with our colours and layer height.
+// Checked with Studio's own command line: it loads the file, reports our
+// colours and 0.08 mm, and reads the same geometry.
 
 import { makeZip } from "./zip.js";
+import { A1_COMMON, A1_PER_FILAMENT, STUDIO_VERSION } from "./bambu_a1.js";
 
 const NS_CORE = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02";
 const NS_BBL = "http://schemas.bambulab.com/package/2021";
-const PLATE_CENTRE = { A1: [128, 128], "A1 mini": [90, 90] };
+// The Bambu Lab A1: a 256 x 256 x 256 mm build volume, origin at the front-left
+// corner, so the middle of the plate is (128, 128).
+export const BUILD_VOLUME_MM = 256;
+const PLATE_CENTRE = [BUILD_VOLUME_MM / 2, BUILD_VOLUME_MM / 2];
 
 const CONTENT_TYPES = `<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -54,7 +70,8 @@ function modelXmlChunks(model) {
   };
   push('<?xml version="1.0" encoding="UTF-8"?>');
   push(`<model unit="millimeter" xml:lang="en-US" xmlns="${NS_CORE}" xmlns:BambuStudio="${NS_BBL}">`);
-  push(' <metadata name="Application">HueLite</metadata>');
+  push(` <metadata name="Application">BambuStudio-${STUDIO_VERSION}</metadata>`);
+  push(' <metadata name="Description">Made with HueLite</metadata>');
   push(' <metadata name="BambuStudio:3mfVersion">1</metadata>');
   push(` <metadata name="Title">${escape(model.name)}</metadata>`);
   push(" <resources>");
@@ -85,7 +102,7 @@ function modelXmlChunks(model) {
   push("   </components>");
   push("  </object>");
   push(" </resources>");
-  const [cx, cy] = PLATE_CENTRE[model.plate] || PLATE_CENTRE.A1;
+  const [cx, cy] = PLATE_CENTRE;
   push(" <build>");
   push(`  <item objectid="${parent}" transform="1 0 0 0 1 0 0 0 1 ${fmt(cx)} ${fmt(cy)} 0" printable="1"/>`);
   push(" </build>");
@@ -123,21 +140,49 @@ function modelSettingsXml(model) {
   return out.join("\n");
 }
 
-function projectSettings(colours, layerHeight) {
-  const cfg = {
-    from: "project",
-    version: "02.07.01.62",
-    filament_colour: colours.map((c) => c.slice(0, 7)),
-    filament_type: colours.map(() => "PLA"),
-    filament_ids: colours.map(() => "GFA00"),
-    enable_prime_tower: "1",
-    prime_tower_width: "15",
-    prime_tower_brim_width: "2",
-  };
-  if (layerHeight) {
-    cfg.layer_height = fmt(layerHeight);
-    cfg.initial_layer_print_height = "0.2";
+/** Where the prime (wipe) tower goes: the plate's right edge, just past the
+ *  print, so a colour change never purges onto the picture. */
+function towerSpot(model, towerMm) {
+  const [cx] = PLATE_CENTRE;
+  const bed = BUILD_VOLUME_MM;
+  let maxX = 0;
+  for (const part of model.parts) {
+    for (let i = 3; i < part.boxes.length; i += 6) if (part.boxes[i] > maxX) maxX = part.boxes[i];
   }
+  const x = Math.min(bed - towerMm - 3, cx + maxX + 5);
+  return [x, bed - towerMm - 3];
+}
+
+/** A complete Bambu Studio project config for the A1 with `colours` as its
+ *  filaments (one per slot, PLA) and `layerHeight` as the layer height. */
+export function projectSettings(model, colours, layerHeight) {
+  const n = colours.length;
+  const tower = 15, brim = 2;
+  const cfg = { from: "project", version: STUDIO_VERSION, ...A1_COMMON };
+  for (const [k, v] of Object.entries(A1_PER_FILAMENT)) cfg[k] = Array(n).fill(v);
+  cfg.filament_colour = colours.map((c) => c.slice(0, 7).toUpperCase());
+  cfg.filament_type = Array(n).fill("PLA");
+  cfg.filament_ids = Array(n).fill("GFA00");
+  cfg.filament_settings_id = Array(n).fill("Bambu PLA Basic @BBL A1");
+  cfg.filament_map = Array(n).fill("1");
+  // everything that scales with the filament count
+  cfg.flush_volumes_matrix = Array.from({ length: n * n }, (_, i) => (Math.floor(i / n) === i % n ? "0" : "280"));
+  cfg.flush_volumes_vector = Array(n * 2).fill("140");
+  cfg.filament_dev_ams_drying_ams_limitations = Array.from({ length: n * 2 }, (_, i) => (i % 2 ? "0" : "1"));
+  cfg.filament_dev_ams_drying_temperature = Array(n * 4).fill("45");
+  cfg.filament_dev_ams_drying_time = Array(n * 4).fill("12");
+  // the one process change from the stock preset (and the tower), listed the
+  // way Studio lists them so its settings panel marks them as modified
+  const [tx, ty] = towerSpot(model, tower);
+  cfg.layer_height = fmt(layerHeight || 0.08);
+  cfg.initial_layer_print_height = "0.2";
+  cfg.enable_prime_tower = "1";
+  cfg.prime_tower_width = String(tower);
+  cfg.prime_tower_brim_width = String(brim);
+  cfg.wipe_tower_x = [fmt(tx)];
+  cfg.wipe_tower_y = [fmt(ty)];
+  cfg.different_settings_to_system = ["layer_height;prime_tower_brim_width;prime_tower_width",
+    ...Array(n).fill(""), ""];
   return JSON.stringify(cfg, null, 4);
 }
 
@@ -149,7 +194,7 @@ export async function make3mf(model, { colours = null, layerHeight = null } = {}
     { name: "Metadata/model_settings.config", chunks: [modelSettingsXml(model)] },
   ];
   if (colours) entries.push({ name: "Metadata/project_settings.config",
-                              chunks: [projectSettings(colours, layerHeight)] });
+                              chunks: [projectSettings(model, colours, layerHeight)] });
   return makeZip(entries, "model/3mf");
 }
 
@@ -182,16 +227,15 @@ export function makeStl(model) {
   return new Blob([buf], { type: "model/stl" });
 }
 
-export function slotNote(filaments) {
+export function slotNote(filaments, { layerHeight = 0.08 } = {}) {
   const lines = ["HueLite -- filament slots for this print", ""];
   filaments.forEach((f, i) => {
     const edge = i === 0 ? "  (prints first, lowest)" : i === filaments.length - 1 ? "  (prints last, top)" : "";
     lines.push(`  Slot ${f.slot}   ${(f.name || "").padEnd(10)} ${f.hex}${edge}`);
   });
-  lines.push("", "Bambu Studio does not always pick these colours up on its own",
-    "when the project opens. If the AMS panel shows something else,",
-    "set each slot to the colour above before printing - the slot",
-    "NUMBER is what actually matters for the print; the colour is",
-    "just so Studio's preview looks right.");
+  lines.push("", `This project already carries ${filaments.length} filaments (the colours above, PLA) and a`,
+    `${fmt(layerHeight)} mm layer height for the Bambu Lab A1, so Bambu Studio opens it`,
+    "ready to go. Put a spool of the matching colour in each AMS slot. The slot",
+    "NUMBER is what prints; the colour only has to be close.");
   return lines.join("\n") + "\n";
 }

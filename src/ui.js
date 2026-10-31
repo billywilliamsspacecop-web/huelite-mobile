@@ -8,7 +8,6 @@
 
 import { h } from "./dom.js";
 import { COMMON, hexToRgb, hsvToRgb, isHex, rgbToHsv, toHex } from "./colour.js";
-import { play } from "./sfx.js";
 
 // ---------------------------------------------------------------- slider
 /** Returns a row: [-] track with handle [+]. Only the handle drags; the -/+
@@ -37,22 +36,17 @@ export function slider({ min, max, step = 1, value, onInput, track = "", fmt = S
     bubble.textContent = fmt(v);
   };
   const set = (nv, emit = true) => {
-    const asked = nv;
     nv = snap(nv);
-    if (nv === v) {
-      if (emit && (asked < min || asked > max)) play("bump");    // hit the end stop
-      return;
-    }
+    if (nv === v) return;
     v = nv;
     paint();
-    if (emit) { play("tick", range ? (v - min) / range : 0); onInput?.(v); }
+    if (emit) onInput?.(v);
   };
 
   let drag = null;
   knob.addEventListener("pointerdown", (e) => {
     try { knob.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
     drag = { id: e.pointerId, x: e.clientX, v };
-    play("grab");
     knob.classList.add("held");
     e.preventDefault();
   });
@@ -61,7 +55,7 @@ export function slider({ min, max, step = 1, value, onInput, track = "", fmt = S
     set(drag.v + ((e.clientX - drag.x) / Math.max(1, el.clientWidth)) * range);
   });
   const end = (e) => {
-    if (drag && e.pointerId === drag.id) { drag = null; knob.classList.remove("held"); play("release"); }
+    if (drag && e.pointerId === drag.id) { drag = null; knob.classList.remove("held"); }
   };
   knob.addEventListener("pointerup", end);
   knob.addEventListener("pointercancel", end);
@@ -116,7 +110,6 @@ export function attachRail(scroller, host) {
   let pinned = false, peek = 0, holding = false;
   const paintState = () => {
     const open = pinned || holding || !!peek;
-    if (open !== (rail.dataset.tucked !== "1")) play(open ? "railOut" : "railIn");
     rail.dataset.tucked = open ? "" : "1";
     host.dataset.rail = pinned ? "open" : "";
   };
@@ -324,7 +317,6 @@ export function colourSheet({ title, hex, printedAs, palette = [], photo = null,
     const r = sv.getBoundingClientRect();
     sat = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
     val = 1 - Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
-    play("pick", val);
     fromHsv();
   };
   svBox.addEventListener("pointerdown", (e) => { svBox.setPointerCapture(e.pointerId); dragging = true; pickSv(e); e.preventDefault(); });
@@ -334,7 +326,7 @@ export function colourSheet({ title, hex, printedAs, palette = [], photo = null,
 
   const swatches = (list) => h("div", { class: "pal" }, list.map(([name, c]) =>
     h("button", { class: "pal-sw", type: "button", title: name || c, "aria-label": name || c,
-      style: `background:${c}`, onclick: () => { play("pick", lum(c) / 255); setHex(c, "pal"); } })));
+      style: `background:${c}`, onclick: () => setHex(c, "pal") })));
 
   // tap the photo to pick what's there
   let eyeBlock = null;
@@ -355,7 +347,7 @@ export function colourSheet({ title, hex, printedAs, palette = [], photo = null,
       ring.style.left = `${nx * 100}%`;
       ring.style.top = `${ny * 100}%`;
       ring.hidden = false;
-      if (c) { play("pick", lum(c) / 255); setHex(c, "eye"); }
+      if (c) setHex(c, "eye");
     };
     ring.hidden = true;
     box.addEventListener("pointerdown", (e) => { box.setPointerCapture(e.pointerId); down = true; pickEye(e); e.preventDefault(); });
@@ -368,7 +360,6 @@ export function colourSheet({ title, hex, printedAs, palette = [], photo = null,
   const close = () => {
     document.removeEventListener("keydown", onKey);
     backdrop.remove();
-    play("sheetClose");
     onClose?.();
   };
   const onKey = (e) => { if (e.key === "Escape") close(); };
@@ -391,7 +382,6 @@ export function colourSheet({ title, hex, printedAs, palette = [], photo = null,
 
   const backdrop = h("div", { class: "sheet-backdrop", onpointerdown: (e) => { if (e.target === backdrop) close(); } }, sheet);
   document.body.append(backdrop);
-  play("sheetOpen");
   requestAnimationFrame(() => { drawSv(); refresh(); });
   new ResizeObserver(drawSv).observe(sv);
   return { close };
@@ -410,10 +400,9 @@ export function folderSheet({ title, folders, current = "", onPick, onClose }) {
   function close() {
     document.removeEventListener("keydown", onKey);
     backdrop.remove();
-    play("sheetClose");
     onClose?.();
   }
-  const pick = (name) => { close(); play("move"); onPick(name); };
+  const pick = (name) => { close(); onPick(name); };
   const chip = (label, name) => h("button", { class: `chip${name === current ? " on" : ""}`, type: "button",
     onclick: () => pick(name) }, label);
   const input = h("input", { class: "val wide-val", placeholder: "new folder name", maxlength: "40",
@@ -431,6 +420,5 @@ export function folderSheet({ title, folders, current = "", onPick, onClose }) {
     h("div", { class: "row" }, input, h("button", { class: "btn", type: "button", onclick: create }, "create")));
   const backdrop = h("div", { class: "sheet-backdrop", onpointerdown: (e) => { if (e.target === backdrop) close(); } }, sheet);
   document.body.append(backdrop);
-  play("sheetOpen");
   return { close };
 }

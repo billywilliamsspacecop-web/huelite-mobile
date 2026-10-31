@@ -9,7 +9,7 @@ export const PENDING = "pending";
 export const COMPLETE = "complete";
 
 // Phone default. Desktop solves at 1800px; that's too heavy for a phone
-// and far more detail than a 100-180 mm print can show anyway.
+// and far more detail than a 100-250 mm print can show anyway.
 export const MOBILE_OUTPUT_PX = 800;
 
 export const DEFAULT_FILAMENTS = [

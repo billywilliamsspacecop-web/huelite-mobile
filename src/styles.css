@@ -559,3 +559,37 @@ html[data-side="1"] .sheet { animation-name: sheet-side; }
 .album-grid > .card:nth-child(3) { --i: 2; } .album-grid > .card:nth-child(4) { --i: 3; }
 .album-grid > .card:nth-child(n+5) { --i: 4; }
 .sheet .row .val { flex: 1; width: auto; }
+
+/* "calm" (Settings > motion): the same as the phone asking for reduced motion */
+html[data-motion="calm"] *, html[data-motion="calm"] *::before, html[data-motion="calm"] *::after {
+  animation-duration: .01ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important;
+  transition-duration: .01ms !important; }
+
+/* ---- main menu ---- */
+html[data-menu="1"]:not([data-side="1"]) .pane.view { height: 27dvh; }
+.hero { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  text-align: center; background: var(--well); padding: 12px; }
+.hero-mark { display: flex; flex-direction: column; gap: 4px; width: 92px; margin-bottom: 8px; }
+.hero-mark i { display: block; height: 10px; transform-origin: left center; animation: hero-breathe 5s ease-in-out infinite; }
+.hero-mark i:nth-child(1) { background: var(--layer-4); width: 100%; animation-delay: 0s; }
+.hero-mark i:nth-child(2) { background: var(--layer-3); width: 86%; animation-delay: .35s; }
+.hero-mark i:nth-child(3) { background: var(--layer-2); width: 72%; animation-delay: .7s; }
+.hero-mark i:nth-child(4) { background: var(--layer-1); width: 58%; animation-delay: 1.05s; }
+.hero-mark i:nth-child(5) { background: var(--text); width: 36%; animation-delay: 1.4s; }
+@keyframes hero-breathe { 0%, 100% { transform: scaleX(1); opacity: 1; } 50% { transform: scaleX(.8); opacity: .75; } }
+.hero-word { font: 800 26px var(--mono); letter-spacing: .3em; padding-left: .3em; }
+.hero-tag { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--text); }
+.hero-sub { font-size: 11px; color: var(--muted); }
+.menu-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding-top: 4px; }
+.menu-item { display: flex; align-items: center; gap: 14px; min-height: 64px; padding: 10px 14px; text-align: left;
+  background: var(--well); border: 1px solid var(--line); }
+.menu-item:active { background: var(--panel); border-color: var(--accent); }
+.menu-item[hidden] { display: none; }
+.menu-item.lead { border-color: var(--accent); background: color-mix(in srgb, var(--fill) 38%, var(--well)); }
+.mi-n { flex: none; width: 28px; font: 800 13px var(--mono); color: var(--accent); }
+.mi-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.mi-t b { font-size: 15px; letter-spacing: .06em; text-transform: uppercase; }
+.mi-t .meta { margin: 0; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mi-go { flex: none; font-size: 22px; color: var(--muted); }
+#app[data-enter] .menu-item { animation: group-in .62s var(--ease-out) backwards; animation-delay: calc(var(--i, 0) * 70ms + 140ms); }
+a.btn { display: block; text-decoration: none; text-align: center; color: var(--accent); }

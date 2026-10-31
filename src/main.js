@@ -24,7 +24,8 @@ let cropper = null;
 let aspectKey = "free";
 let solveView = "sim";
 let solveTimer = 0;
-let exportOpts = { detail: "standard", plate: "A1", formats: { "3mf": true, stl: false } };
+let exportOpts = { detail: "standard", formats: { "3mf": true, stl: false } };
+const BED_MM = bambu3mf.BUILD_VOLUME_MM;   // the Bambu Lab A1 plate: 256 x 256 x 256 mm
 let lastFiles = [];           // [{ name, url }] from the last export
 let prepView = "crop";        // crop | result
 let preSuggest = null;        // adjustments before the last "suggest", for undo
@@ -140,7 +141,7 @@ const STAGE_SUB = {
 
 let toastTimer;
 function toast(msg, ms = 1800) {
-  sfx.play(/couldn't|can't|failed|too big|missing|nothing|no button|not a|damaged|unsupported/i.test(msg) ? "error" : "toast");
+  if (/couldn't|can't|failed|too big|missing|damaged|unsupported/i.test(msg)) sfx.play("error");
   let t = document.querySelector(".toast");
   if (!t) { t = h("div", { class: "toast" }); document.body.append(t); }
   t.textContent = msg;
@@ -159,21 +160,20 @@ function loader(label, mini = false) {
 
 /** Re-run a one-shot CSS animation (view swaps) by restarting its class. */
 function pulse(el, cls = "swap") {
-  sfx.play("swap");
   el.classList.remove(cls);
   void el.offsetWidth;
   el.classList.add(cls);
 }
 
 /** Run something heavy with a "working" veil, after the veil has painted. */
-async function busy(label, fn) {
+async function busy(label, fn, { quiet = false } = {}) {
   const veil = h("div", { class: "veil" }, loader(label));
   document.body.append(veil);
-  const done = sfx.loading();          // boot blip, then layers stacking in time with the loader
+  const done = sfx.loading();
   await nextFrame();
   try {
     const result = await fn();
-    done(true);
+    done(true, quiet);                 // quiet where the work ends by changing page
     return result;
   } catch (err) {
     done(false);
@@ -212,7 +212,6 @@ const picker = h("input", { type: "file", accept: "image/*", hidden: true,
       aspectKey = "free";
       prepView = "crop";
       preSuggest = null;
-      sfx.play("photo");
       go("prep");
       await store.putFile(app.project.id, "source", file);
       await persistNow(await thumbBlob(bmp));
@@ -307,7 +306,7 @@ async function openProject(id) {
     aspectKey = "free";
     const st = app.project.status;
     go(st.solve === COMPLETE ? "export" : st.prep === COMPLETE ? "solve" : "prep");
-  });
+  }, { quiet: true });
 }
 
 /** Share sheet if the browser can share this file, else a download. */
@@ -388,6 +387,7 @@ async function closeProject() {
   app.project = app.prepped = app.proxy = app.solved = null;
   lastFiles.forEach((f) => URL.revokeObjectURL(f.url));
   lastFiles = [];
+  menuPage = "main";
   go("prep");
 }
 
@@ -454,18 +454,22 @@ function render() {
 
   const home = !app.project;
   root.dataset.home = home ? "1" : "";
-  const name = app.project?.name || "projects";
+  const name = app.project?.name || "menu";
+  sfx.setMenu(home);
+  document.documentElement.dataset.menu = home && menuPage === "main" ? "1" : "";
   const n = STAGES.indexOf(app.stage) + 1;
   const header = h("header", { class: "top" },
     h("div", { class: "top-row" },
-      h("h1", { class: "stage-title" }, home ? "HueLite" : `0${n} ${STAGE_LABELS[app.stage]}`),
+      h("h1", { class: "stage-title" }, home ? MENU_HEAD[menuPage][0] : `0${n} ${STAGE_LABELS[app.stage]}`),
       h("div", { class: "top-right" },
         soundButton(),
         app.project
-          ? h("button", { class: "brand link", onclick: closeProject }, "☰ projects")
-          : h("div", { class: "brand" }, "photo → layered print"))),
+          ? h("button", { class: "brand link", onclick: closeProject }, "☰ menu")
+          : menuPage !== "main"
+            ? h("button", { class: "brand link", onclick: () => menuGo("main") }, "‹ menu")
+            : null)),
     home
-      ? h("div", { class: "top-sub" }, "saved on this phone")
+      ? h("div", { class: "top-sub" }, MENU_HEAD[menuPage][1])
       : h("div", { class: "top-sub" },
           h("span", { class: "proj", onclick: rename }, name),
           h("span", { class: "dotsep" }, "·"),
@@ -486,13 +490,13 @@ function render() {
   // the page arrives: a whoong that rises going forward and falls going back,
   // then a soft ping for each control group as it lands
   const how = root.dataset.enter;
-  if (how) {
-    sfx.play(how === "fwd" ? "pageFwd" : how === "back" ? "pageBack" : "pageRise");
+  if (app.project && (how === "fwd" || how === "back")) {
+    sfx.play(how === "fwd" ? "pageFwd" : "pageBack");
     sfx.play("arrive", groups.length);
   }
 
   // swipe left / right between stages
-  if (app.project) {
+  if (app.project && pref("swipe", "on") !== "off") {
     const at = STAGES.indexOf(app.stage);
     disposers.push(attachSwipe(body, {
       drag: screen,
@@ -553,14 +557,21 @@ function renderPrep(screen, action) {
   const cropHost = h("div");
   const readout = h("div");
   const shapeNote = h("p", { class: "meta shape-note" }, "");
+  let widthField = null;
+  /** The widest print of this crop that still fits the A1 plate (256 mm each way). */
+  const fitToBed = (mm) => {
+    const [, , w, hgt] = p.crop || cropper?.getCrop() || [0, 0, 1, 1];
+    return Math.max(20, Math.min(mm, Math.floor(BED_MM / Math.max(1, hgt / w))));
+  };
   const updateReadout = (crop) => {
     const [, , w, hgt] = crop;
     const k = Math.min(1, MOBILE_OUTPUT_PX / Math.max(w, hgt));
     const mmH = p.physical_width_mm * (hgt / w);
+    const over = p.physical_width_mm > BED_MM + 0.5 || mmH > BED_MM + 0.5;
     readout.replaceChildren(kv([
       ["crop", `${w} × ${hgt} px`],
       ["solve", `${Math.round(w * k)} × ${Math.round(hgt * k)} px`],
-      ["print", `${p.physical_width_mm.toFixed(0)} × ${mmH.toFixed(0)} mm`],
+      ["print", `${p.physical_width_mm.toFixed(0)} × ${mmH.toFixed(0)} mm${over ? "  ⚠ bigger than the 256 mm A1 plate" : ""}`],
     ]));
   };
 
@@ -750,14 +761,12 @@ function renderPrep(screen, action) {
   const lassoBtn = h("button", { class: "btn wide lasso-btn", type: "button", onclick: () => setLassoOn(!lassoOn) }, "");
   const undoCut = h("button", { class: "chip", type: "button", onclick: () => {
     if (!p.shape.cuts.length) return;
-    sfx.play("undo");
     p.shape.cuts.pop();
     cutsChanged();
   } }, "↶ undo");
   const clearCuts = h("button", { class: "chip", type: "button", onclick: () => {
     if (!p.shape.cuts.length) return;
     if (p.shape.cuts.length > 1 && !confirm(`Remove all ${p.shape.cuts.length} cuts?`)) return;
-    sfx.play("clear");
     p.shape.cuts = [];
     cutsChanged();
   } }, "clear");
@@ -784,7 +793,6 @@ function renderPrep(screen, action) {
   }
   function setLassoOn(on) {
     if (on && !cropper) return;
-    if (on !== lassoOn) sfx.play(on ? "lassoOn" : "lassoOff");
     lassoOn = on;
     const el = document.documentElement;
     if (on) {
@@ -792,7 +800,6 @@ function renderPrep(screen, action) {
       // a bigger photo to draw on (stacked layouts only)
       if (!layout.side) { bigBefore = el.dataset.big || ""; el.dataset.big = "1"; }
       cropper.setLasso({ tool: lassoTool, onStroke: (loop) => {
-        sfx.play(lassoTool === "back" ? "restore" : lassoTool === "only" ? "keep" : "snip");
         p.shape.cuts.push({ tool: lassoTool, pts: loop });
         cutsChanged();
       } });
@@ -848,9 +855,9 @@ function renderPrep(screen, action) {
       lassoNote,
 
       head("print size"),
-      numField("width (mm)", p.physical_width_mm, { step: "1", min: 20, max: 256,
-        onchange: (v) => { p.physical_width_mm = v; updateReadout(p.crop); invalidate(); cropper?.refreshOverlay(); } }),
-      h("p", { class: "meta" }, "A1 bed is 256 mm · A1 mini is 180 mm")),
+      widthField = numField("width (mm)", p.physical_width_mm, { step: "1", min: 20, max: BED_MM,
+        onchange: (v) => { v = fitToBed(v); widthField.querySelector("input").value = String(v); p.physical_width_mm = v; updateReadout(p.crop); invalidate(); cropper?.refreshOverlay(); } }),
+      h("p", { class: "meta" }, "the A1 plate is 256 × 256 mm, and 256 mm tall")),
   );
 
   action.append(
@@ -891,7 +898,13 @@ async function sideThumbFor(rec) {
 }
 let sideQueue = Promise.resolve();   // one GL context at a time
 
+/** Route the home screen to whichever menu page is open. */
 function renderHome(screen) {
+  ({ main: menuMain, projects: menuProjects, settings: menuSettings, help: menuHelp, about: menuAbout }[menuPage]
+    || menuMain)(screen);
+}
+
+function menuProjects(screen) {
   const album = pref("view", "list") === "album";
   const holder = h("div", { class: "home-list" }, loader("loading projects", true));
   const collapsed = new Set((() => { try { return JSON.parse(pref("collapsed", "[]")); } catch { return []; } })());
@@ -901,30 +914,14 @@ function renderHome(screen) {
     album ? "album" : "list", (k) => { setPref("view", k); render(); });
   const newBtn = h("button", { class: "btn wide", type: "button", onclick: () => picker.click() }, "+ new from a photo");
 
-  const ctrl = pane("ctrl",
-    h("div", { class: "home-bar" }, head("projects"), viewChips),
-    album ? newBtn : null,
+  screen.append(pane("ctrl",
+    h("div", { class: "home-bar" }, head("saved prints"), viewChips),
+    newBtn,
     holder,
-    head("sound"),
-    chipGroup([{ key: "on", label: "sound on" }, { key: "off", label: "sound off" }], sfx.isEnabled() ? "on" : "off",
-      (k) => { if (k === "on") sfx.setEnabled(true); else { sfx.play("off"); sfx.setEnabled(false); } render(); }),
-    rangeField("volume", Math.round(sfx.getVolume() * 100), { min: 0, max: 100, fmt: (v) => `${v}%`,
-      oninput: (v) => sfx.setVolume(v / 100) }),
-    h("button", { class: "btn wide gap-top", type: "button", onclick: () => sfx.demo() }, "play a demo of the sounds"),
-    h("p", { class: "meta" }, "taps, slider ticks, page whooshes, loading beeps, lasso snips, a fanfare on export. " +
-      "the ♪ button in the corner mutes everything."),
     head("files"),
     h("button", { class: "btn wide", onclick: () => zipPicker.click() }, "import a project (.zip)"),
     h("p", { class: "meta" }, "zip a project folder on the Mac (Finder › Compress) and open it here, " +
-      "or save one from here and unzip it into Documents/HueLite/projects on the Mac."),
-    h("p", { class: "stamp" }, `build ${__BUILD__}`));
-  // the album is the whole screen; the list keeps the big "new" button beside it
-  screen.append(...(album ? [ctrl] : [
-    pane("view", frame(null, h("button", { class: "drop", onclick: () => picker.click() },
-      h("b", {}, "+ new from a photo"),
-      h("span", {}, "library or camera · PNG cut-outs keep their shape"),
-      h("span", {}, "turns it into a layered, multi-filament print for the A1")))),
-    ctrl]));
+      "or save one from here and unzip it into Documents/HueLite/projects on the Mac.")));
 
   const load = () => store.listProjects().then((raw) => {
     const recs = raw.map((r) => ({ ...r, data: sanitizeProject(r.data) }));
@@ -939,7 +936,6 @@ function renderHome(screen) {
       onPick: async (g) => { await store.setGroup(rec.id, g); reload(); } });
     const remove = async (rec) => {
       if (!confirm(`Delete "${rec.data.name}" from this phone? This can't be undone.`)) return;
-      sfx.play("delete");
       await store.deleteProject(rec.id);
       render();
     };
@@ -1024,6 +1020,152 @@ function renderHome(screen) {
   load();
 }
 
+// ---------------------------------------------------------------- main menu
+let menuPage = "main";    // main | projects | settings | help | about
+
+const MENU_HEAD = {
+  main: ["Main menu", "photo → layered print"],
+  projects: ["Projects", "your saved prints"],
+  settings: ["Settings", "sound, motion and gestures"],
+  help: ["Help", "how HueLite works"],
+  about: ["About", "version and privacy"],
+};
+
+function menuGo(page) {
+  enter = page === "main" ? "back" : "fwd";
+  menuPage = page;
+  render();
+}
+
+const menuItem = (n, title, hint, onclick, cls = "") =>
+  h("button", { class: `menu-item ${cls}`, type: "button", onclick },
+    h("span", { class: "mi-n" }, n),
+    h("span", { class: "mi-t" }, h("b", {}, title), h("span", { class: "meta" }, hint)),
+    h("span", { class: "mi-go" }, "›"));
+
+function menuMain(screen) {
+  let latest = null;
+  const cont = menuItem("▶", "Continue", "", () => latest && openProject(latest.id), "menu-continue lead");
+  cont.hidden = true;
+  const projects = menuItem("02", "Projects", "your saved prints, folders and album", () => menuGo("projects"));
+  const list = h("div", { class: "menu-list" },
+    cont,
+    menuItem("01", "New project", "start from a photo", () => picker.click()),
+    projects,
+    menuItem("03", "Import a project", "open a .zip from the Mac", () => zipPicker.click()),
+    menuItem("04", "Settings", "sound, motion, gestures", () => menuGo("settings")),
+    menuItem("05", "Help", "how it works, gestures, tips", () => menuGo("help")),
+    menuItem("06", "About", "version and privacy", () => menuGo("about")));
+  list.querySelectorAll(".menu-item").forEach((el, i) => el.style.setProperty("--i", String(i)));
+
+  screen.append(
+    pane("view", frame(null, h("div", { class: "hero" },
+      h("div", { class: "hero-mark" }, h("i"), h("i"), h("i"), h("i"), h("i")),
+      h("div", { class: "hero-word" }, "HUELITE"),
+      h("div", { class: "hero-tag" }, "photo → layered print"),
+      h("div", { class: "hero-sub" }, "multi-colour relief prints for the Bambu Lab A1")))),
+    pane("ctrl", list, h("p", { class: "stamp" }, `build ${__BUILD__}`)));
+
+  store.listProjects().then((raw) => {
+    if (!raw.length) return;
+    const rec = raw[0];
+    const d = sanitizeProject(rec.data);
+    latest = rec;
+    const next = STAGES.find((st) => d.status[st] !== COMPLETE);
+    cont.querySelector(".meta").textContent = `${d.name} · ${next ? `next: ${STAGE_LABELS[next].toLowerCase()}` : "complete"}`;
+    cont.hidden = false;
+    projects.querySelector(".meta").textContent = `${raw.length} saved · folders and album`;
+  }).catch((err) => console.error(err));
+}
+
+function menuSettings(screen) {
+  const on = (key, fb) => pref(key, fb);
+  const storage = h("p", { class: "meta" }, "checking…");
+  navigator.storage?.estimate?.().then(({ usage = 0, quota = 0 }) => {
+    const mb = (n) => (n / 1048576 >= 1024 ? `${(n / 1073741824).toFixed(1)} GB` : `${(n / 1048576).toFixed(1)} MB`);
+    storage.textContent = `projects use ${mb(usage)} of ${mb(quota)} this browser allows`;
+  }).catch(() => { storage.textContent = "storage size isn't available in this browser"; });
+  if (!navigator.storage?.estimate) storage.textContent = "storage size isn't available in this browser";
+
+  screen.append(pane("ctrl",
+    head("sound"),
+    chipGroup([{ key: "on", label: "sound on" }, { key: "off", label: "sound off" }], sfx.isEnabled() ? "on" : "off",
+      (k) => sfx.setEnabled(k === "on")),
+    rangeField("volume", Math.round(sfx.getVolume() * 100), { min: 0, max: 100, fmt: (v) => `${v}%`,
+      oninput: (v) => sfx.setVolume(v / 100) }),
+    h("button", { class: "btn wide gap-top", type: "button", onclick: () => sfx.demo() }, "play a demo"),
+    h("p", { class: "meta" }, "sounds are for moving between stages, a quiet tick on buttons, and finishing jobs. " +
+      "the main menu, sliders and scroll bar are always silent. the ♪ button in the corner mutes everything."),
+
+    head("motion"),
+    chipGroup([{ key: "full", label: "full" }, { key: "calm", label: "calm" }], on("motion", "full"),
+      (k) => { setPref("motion", k); applyMotion(); }),
+    h("p", { class: "meta" }, "calm turns off the slides, fades and loaders (also followed automatically if the phone asks for reduced motion)."),
+
+    head("gestures"),
+    chipGroup([{ key: "on", label: "swipe between stages" }, { key: "off", label: "swipe off" }], on("swipe", "on"),
+      (k) => setPref("swipe", k)),
+    h("p", { class: "meta" }, "swipe left or right on blank screen to go to the next or previous stage. takes effect on the next screen."),
+
+    head("storage"),
+    storage,
+    h("p", { class: "meta" }, "projects live in this browser on this phone only. zip a project to keep a copy elsewhere."),
+
+    head("reset"),
+    h("button", { class: "btn wide", type: "button", onclick: () => {
+      if (!confirm("Reset sound, motion, gesture and view settings? Your projects are not touched.")) return;
+      for (const k of ["sfx", "vol", "motion", "swipe", "view", "collapsed"]) { try { localStorage.removeItem(`huelite.${k}`); } catch { /* private window */ } }
+      applyMotion();
+      location.reload();
+    } }, "reset settings")));
+}
+
+function menuHelp(screen) {
+  const para = (title, text) => [h("p", { class: "note" }, h("b", {}, title + "  "), text)];
+  screen.append(pane("ctrl",
+    head("the three steps"),
+    para("01 Prep", "crop the photo, choose its shape (rectangle, oval, cut-out, or lasso your own), set the print width, and shape the picture. decimate (how many colours) and saturation matter most."),
+    para("02 Solve", "choose up to four filaments. \"fit colours to photo\" picks the colours that make the printed stack look most like your photo. layers per filament set the thickness; print, angle, height and photo views show the result."),
+    para("03 Export", "check cost and size, pick the mesh detail, and save a Bambu .3mf (or STL) for the A1. open it in Bambu Studio."),
+
+    head("moving around"),
+    h("ul", { class: "tips" },
+      h("li", {}, "tap the stage tabs at the bottom, or swipe left and right on blank screen."),
+      h("li", {}, "a stage unlocks when the one before it is finished."),
+      h("li", {}, "☰ menu (top right) saves and returns here; projects are kept automatically."),
+      h("li", {}, "the grip on the right edge slides the scroll bar out; scrolling does too."),
+      h("li", {}, "sliders: drag the handle, or use − and +. hold − or + to repeat.")),
+
+    head("on the picture"),
+    h("ul", { class: "tips" },
+      h("li", {}, "crop: drag the box and its corners."),
+      h("li", {}, "lasso cut: draw a loop. cut away, put back, or keep only what's inside. undo steps back."),
+      h("li", {}, "3D angle view: drag to turn, pinch to zoom, double-tap to reset.")),
+
+    head("tips"),
+    h("ul", { class: "tips" },
+      h("li", {}, "the flatter the photo looks (try the presets), the cleaner the print."),
+      h("li", {}, "translucent blend mixes colours like layered filament; solid bands keep each colour pure."),
+      h("li", {}, "a thin print can curl: add base depth or layers if Solve says so."),
+      h("li", {}, "the A1 plate is 256 × 256 mm; a print wider or taller than that is flagged."),
+      h("li", {}, "add to home screen for a full-screen app that works offline."))));
+}
+
+function menuAbout(screen) {
+  screen.append(pane("ctrl",
+    head("HueLite"),
+    h("p", { class: "note" }, "turns a photo into a layered, multi-colour relief print for the Bambu Lab A1, entirely on this phone."),
+    kv([["version", `build ${__BUILD__}`], ["runs", "offline, in this browser"], ["exports", ".3mf (Bambu) and .stl"]]),
+
+    head("privacy"),
+    h("p", { class: "note" }, "photos and projects never leave this phone: there is no account, no server and no tracking. " +
+      "files are only shared when you export or zip a project."),
+
+    head("source"),
+    h("a", { class: "btn wide", href: "https://github.com/billywilliamsspacecop-web/huelite-mobile", target: "_blank", rel: "noopener noreferrer" },
+      "github.com/billywilliamsspacecop-web/huelite-mobile")));
+}
+
 /** The print outline for an RGBA sample of the crop: the base shape the chips
  *  chose, then the hand cuts on top of it. null = print the whole crop. */
 function buildMask(sample, crop) {
@@ -1082,7 +1224,7 @@ async function commitPrep() {
     const shown = mask ? canvasOf(checkered(mask, w, hh, prepped)) : out;
     await persistNow(await thumbBlob(shown));
     go("solve");
-  });
+  }, { quiet: true });
 }
 
 // ---------------------------------------------------------------- solve
@@ -1428,7 +1570,7 @@ async function commitSolve() {
       baseMm: baseLayers * lh, cellMm: app.project.prep.physical_width_mm / w, shaded: false }));
     await persistNow(await thumbBlob(top));
     go("export");
-  });
+  }, { quiet: true });
 }
 
 // ---------------------------------------------------------------- export
@@ -1467,11 +1609,12 @@ function renderExport(screen, action) {
   }
 
   const stats = h("p", { class: "meta" }, "building mesh…");
+
   const restat = () => {
     const model = mesh.buildModel(modelArgs());
     const mode = app.project.prep.shape?.mode || "rect";
     stats.textContent = `${model.stats.parts} parts · ${model.stats.triangles.toLocaleString()} triangles · ` +
-      `plate ${exportOpts.plate} · outline ${mask ? shape.MODE_LABELS[mode] : "rectangle"}`;
+      `A1 plate · outline ${mask ? shape.MODE_LABELS[mode] : "rectangle"}`;
   };
 
   const info = h("div");
@@ -1481,6 +1624,8 @@ function renderExport(screen, action) {
     const [fw, fd] = est.footprint_mm;
     const tips = [];
     if (est.max_height_mm / Math.max(fw, fd) > 0.35) tips.push("tall for its footprint: add a brim in Studio");
+    if (Math.max(fw, fd) > BED_MM + 0.5) tips.push(`${fw.toFixed(0)} × ${fd.toFixed(0)} mm is bigger than the A1's ${BED_MM} mm plate: go back to Prep and make it smaller`);
+    else if (Math.max(fw, fd) > BED_MM - 22) tips.push("this nearly fills the plate: in Studio you may need to move the prime tower");
     if (est.switches >= 6) tips.push(`${est.switches} colour changes is a lot of AMS time; keep spools dry`);
     tips.push(`slot 1 (${est.base_hex}) touches the plate: set bed temp and adhesion for that filament`);
     tips.push("wipe the plate with IPA before printing");
@@ -1528,9 +1673,6 @@ function renderExport(screen, action) {
       info,
       numField("price ($ / kg)", ex.price_per_kg ?? 25, { step: "1", min: 0, max: 500, fmt: (v) => v.toFixed(2),
         onchange: (v) => { ex.price_per_kg = v; reinfo(); } }),
-      head("plate"),
-      chipGroup([{ key: "A1", label: "A1" }, { key: "A1 mini", label: "A1 mini" }], exportOpts.plate,
-        (k) => { exportOpts.plate = k; restat(); }),
       head("mesh detail"),
       chipGroup([{ key: "draft", label: "draft" }, { key: "standard", label: "standard" }, { key: "fine", label: "fine" }],
         exportOpts.detail, (k) => { exportOpts.detail = k; restat(); }),
@@ -1563,24 +1705,24 @@ function renderExport(screen, action) {
       if (!model.parts.length) throw new Error("every filament band came out empty");
       const out = [];
       if (formats.includes("3mf")) {
-        out.push(new File([await bambu3mf.make3mf({ ...model, plate: exportOpts.plate },
+        out.push(new File([await bambu3mf.make3mf(model,
           { colours: s.filaments.map((f) => f.hex), layerHeight: lh })], `${stem}.3mf`, { type: "model/3mf" }));
       }
       if (formats.includes("stl")) out.push(new File([bambu3mf.makeStl(model)], `${stem}.stl`, { type: "model/stl" }));
-      out.push(new File([bambu3mf.slotNote(s.filaments)], `${stem}-filament-slots.txt`, { type: "text/plain" }));
+      out.push(new File([bambu3mf.slotNote(s.filaments, { layerHeight: lh })], `${stem}-filament-slots.txt`, { type: "text/plain" }));
       return out;
-    }).catch((err) => { toast(`Export failed: ${err.message}`, 3000); return null; });
+    }, { quiet: true }).catch((err) => { toast(`Export failed: ${err.message}`, 3000); return null; });
     if (!files) return;
 
     lastFiles.forEach((f) => URL.revokeObjectURL(f.url));
     lastFiles = files.map((f) => ({ name: f.name, url: URL.createObjectURL(f) }));
     ex.formats = formats;
     ex.last_export = { time: new Date().toISOString().slice(0, 19), detail: exportOpts.detail,
-                       plate: exportOpts.plate, name: app.project.name, files: files.map((f) => f.name) };
+                       plate: "A1", name: app.project.name, files: files.map((f) => f.name) };
     setStatus("export", COMPLETE);
     refreshStepper();
     showFiles();
-    sfx.play("fanfare");
+    sfx.play("success");
     await deliver(files);
   }
 }
@@ -1622,16 +1764,12 @@ function soundButton() {
  *  else already makes the sound (sliders, swatch sheets) or it is silent. */
 function soundFor(el) {
   const b = el.closest("button");
-  if (!b || b.disabled || b.closest(".sheet-backdrop, .loader, .toast")) return null;
-  if (b.matches(".slider-step, .pal-sw, .fil-table .sw, .rail-btn")) return b.matches(".rail-btn") ? "tap" : null;
+  if (!b || b.disabled || b.closest(".loader, .toast")) return null;
+  // the main menu is silent: only picking a project blips
+  if (!app.project) return b.matches(".project-open, .card-open, .menu-continue") ? "select" : null;
+  // sliders and the scroll bar never sound; the stage buttons have their own page sound
+  if (b.matches(".slider-step, .pal-sw, .fil-table .sw, .rail-btn, .action .btn.primary")) return null;
   if (b.matches(".step")) return b.classList.contains("locked") ? null : "tab";   // locked: "blocked" plays
-  if (b.matches(".btn.primary")) return "primary";
-  if (b.matches(".chip")) return "chip";
-  if (b.matches(".project-open, .card-open")) return "open";
-  if (b.matches(".project-del, .card-tools button")) {
-    const t = b.textContent.trim().toLowerCase();
-    return t === "✕" || t === "delete" ? "warn" : t === "zip" ? "zip" : "tap";
-  }
   return "tap";
 }
 // Press-down, not click: the sound lands with the finger. On the document, so
@@ -1640,7 +1778,10 @@ document.addEventListener("pointerdown", (e) => {
   const name = soundFor(e.target);
   if (name) sfx.play(name);
 }, true);
-document.addEventListener("change", (e) => { if (e.target.matches?.("input.val")) sfx.play("chip"); }, true);
+
+/** "calm" switches the slides, fades and loaders off (Settings > motion). */
+function applyMotion() { document.documentElement.dataset.motion = pref("motion", "full"); }
+applyMotion();
 
 render();
 
@@ -1651,7 +1792,6 @@ render();
 // a refresh. Production builds only.
 function showUpdateBar() {
   if (document.querySelector(".update-bar")) return;
-  sfx.play("chime");
   document.body.append(h("div", { class: "update-bar" },
     h("span", {}, "a new version of HueLite is ready"),
     h("button", { type: "button", onclick: () => location.reload() }, "reload")));

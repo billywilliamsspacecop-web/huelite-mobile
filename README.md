@@ -19,6 +19,7 @@ Prep → Solve → Export all run on the phone, with no server.
 | Lasso cut: chip away, put back, or keep only what you loop; works on any shape | done |
 | Colour fit: filament colours chosen so the *printed* stack matches the photo | done |
 | Export: Bambu 3MF + STL + slot note, cost/purge estimate, share sheet or download | done |
+| Opens in Bambu Studio with the right filaments, colours and 0.08 mm layers (A1) | done |
 | Prep adjustments, presets, suggest for print (pixel-identical to the desktop) | done |
 | Saving projects between launches (IndexedDB), project list | done |
 | Project .zip export/import, same folder layout as the desktop | done |
@@ -76,38 +77,77 @@ Colours - what the preview means:
 Tapping a swatch opens an in-app picker: exported colour next to "prints
 as", a palette from the photo, tap-the-photo, hue + saturation/value, hex.
 
+## Exporting for Bambu Studio (A1 only)
+
+HueLite targets one printer: the **Bambu Lab A1** (256 × 256 × 256 mm). Prep
+checks the print against that plate (the width is clamped so the whole print,
+height included, fits) and Export warns when it nearly fills it.
+
+**The bug this fixed:** a 4-colour print opened in Studio as 3 colours at
+0.2 mm layers, losing a lot of detail. Studio had shown *"The 3mf file has
+invalid config, load geometry data only"*, thrown away the file's filament
+colours and layer height, and given the parts whichever filaments the open
+project already had (extruder 4 simply didn't exist). Two things caused it:
+Studio only trusts a project's settings if the `Application` line says
+`BambuStudio-...` (ours said `HueLite`), and the settings have to be a complete,
+consistent config (ours was four keys).
+
+**The fix:** `3D/3dmodel.model` now says `BambuStudio-02.08.02.61` (with
+"Made with HueLite" in the description), and `Metadata/project_settings.config`
+is a full A1 config: `src/engine/bambu_a1.js` is the config of a project Studio
+itself saved (stock `0.20mm Standard @BBL A1`, Bambu PLA Basic), and
+`projectSettings()` in `bambu3mf.js` fills in our colours, the 0.08 mm layer
+height, one entry per filament in every per-filament list, the flush-volume
+matrix, and a small prime tower parked just past the print. Checked with
+Studio's own command line (`BambuStudio --info --export-settings file.3mf`):
+the file loads, the same triangles come out, and the exported settings show our
+colours, `layer_height 0.08` and the A1 printer, for 2, 3 and 4 filaments. A
+file with the old config makes it report a single default filament and 0.2 mm.
+
+Notes: the config is from Studio 02.08.02.61; an older Studio may say the file
+is newer. The desktop exporter has the same two problems and wants the same
+change. Studio keeps its log encrypted, so the exact rejection reason is
+inferred, not read.
+
+## Main menu
+
+The old project list is now a **main menu** (`menuMain` in `main.js`): a hero
+mark, then Continue (the last project you touched, when there is one), New
+project, Projects, Import a project, Settings, Help and About. "☰ menu" in a
+project saves and returns here; "‹ menu" backs out of a sub-page.
+
+- **Projects** keeps everything the old page had: list or album, folders, move,
+  zip, delete, import.
+- **Settings**: sound on/off, volume and a demo; motion (full or calm); swipe
+  between stages on/off; how much storage projects use; reset settings (never
+  touches projects). Stored in `localStorage` as `huelite.*`.
+- **Help**: the three steps, moving around, gestures, tips.
+- **About**: build, what it exports, privacy (nothing leaves the phone), source.
+
 ## Sound
 
-`src/sfx.js` - 47 short sounds synthesized live with WebAudio (oscillators and
-filtered noise; no audio files, so nothing to download and it works offline).
-`play(name, arg)` is the whole API and rate-limits itself.
+`src/sfx.js` - 11 short sounds synthesized live with WebAudio (no audio files).
+The rule is "quiet, uniform, and only where it means something":
 
-- **Every press** has a sound by element type (a global pointer-down listener
-  in `main.js`): taps, chips, stage tabs, the main button's two-note chirp,
-  opening a project, a low buzz for delete, a chirp for zip. A locked stage
-  buzzes instead.
-- **Sliders** tick, and the tick climbs in pitch with the value; grabbing and
-  letting go pop; hitting an end stop thumps. Crop, the lasso stroke, 3D
-  orbit and pinch-zoom tick too.
-- **Pages**: a "whoong" that rises going forward and falls going back, then a
-  soft ping for each control group as it lands. The chimes sit on the current
-  stage's note (Prep C5, Solve E5, Export G5), so the app rises in pitch as a
-  print moves toward the printer.
-- **Loading**: a boot blip, then four layers stacking in time with the
-  loader's animation, then a trill when done (a low buzz if it failed).
-- **Moments**: lasso on/off, a scissor snip for a cut, a rising sweep for put
-  back, a shutter for a new photo, a fanfare on export, a bell when a new
-  version is ready, colour picks pitched by lightness.
+- **Between stages** (kept as designed): the stage-tab press, a whoong that
+  rises going forward and falls going back, a soft ping per control group as
+  it lands, and a low buzz for a stage that isn't open yet. The chimes sit on
+  the stage's note (Prep C5, Solve E5, Export G5). Swiping makes the same sounds.
+- **Everywhere else**: one quiet tick for any button; a soft two-note "done"
+  when a job finishes (not when it ends by changing page - the page sound is
+  the cue); a warmer three-note one when an export is built; a low double buzz
+  if something fails.
+- **Main menu**: silent, except a small blip when you pick a project.
+- **Never**: sliders, the scroll bar, crop, lasso, the 3D view, colour sheets.
 
-The ♪ button in the header mutes everything; home has on/off, a volume slider
-and "play a demo". Browsers keep audio locked until a touch, so the first tap
-only unlocks it (a sound asked for long before is never replayed late).
-`_LIB` and `_useContext` let a test render any sound into an
-OfflineAudioContext; all 47 were checked for NaNs, clipping, silence and length.
+The ♪ button in the header mutes everything (turning sound on blips; off is
+silent). Browsers keep audio locked until a touch, so the first tap only
+unlocks it, and a sound asked for long before is never replayed late.
+`_LIB` and `_useContext` render any sound into an OfflineAudioContext for tests.
 
 ## Folders and the album
 
-Home has a **list / album** switch. Projects can be filed into folders: "move"
+Projects (from the main menu) has a **list / album** switch. Projects can be filed into folders: "move"
 on a project opens a picker (an existing folder, none, or a new name); folders
 get collapsible headers with rename and ungroup. The folder is stored as
 `group` in `project.json` (phone-only - the desktop's own `folder` field is
@@ -201,8 +241,9 @@ re-crop. The geometry (`fillPolygon`, `simplify`, `applyCuts`) is in
 
 On the same input it matches the desktop exactly: the same Prep
 adjustments pixel for pixel (Pillow's filters are reproduced, including
-its median cut), the same masks, heightmap and mesh, and a byte-identical
-`3D/3dmodel.model` inside the 3MF. Keep it that way: when one side changes, change the other. Colour
+its median cut), the same masks, heightmap and mesh, and the same geometry
+in `3D/3dmodel.model` inside the 3MF (byte for byte, apart from the two header lines
+that Studio needs - see Exporting for Bambu Studio). Keep it that way: when one side changes, change the other. Colour
 import is a deliberate difference: the phone clusters colours instead of
 using PIL's median cut, so a small but real area (black text on a red badge)
 still gets its own slot, and then fits them to the stack (see Colours). The
