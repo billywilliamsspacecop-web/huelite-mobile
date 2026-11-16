@@ -13,6 +13,7 @@ import { attachSwipe } from "./swipe.js";
 import * as sfx from "./sfx.js";
 import * as store from "./store.js";
 import * as projectzip from "./engine/projectzip.js";
+import { makeZip, readZip } from "./engine/zip.js";
 import { uuid } from "./state.js";
 import { h } from "./dom.js";
 import { actionSheet, attachRail, colourSheet, folderSheet, slider } from "./ui.js";
@@ -360,25 +361,69 @@ async function saveBlob(blob, filename) {
   toast(`saved ${filename} to downloads`, 2600);
 }
 
+async function packProject(id) {
+  const rec = await store.getProject(id);
+  const [source, prepped, solved] = await Promise.all(
+    ["source", "prepped", "solved"].map((n) => store.getFile(id, n)));
+  const st = rec.data.status;
+  return projectzip.pack({ data: rec.data, source,
+    prepped: st.prep === COMPLETE ? prepped : null,
+    solved: st.prep === COMPLETE && st.solve === COMPLETE ? solved : null });
+}
+
+/** Every project on this phone in one .zip (a project .zip each, inside).
+ *  "import" on Projects takes it back whole. */
+async function backupAllProjects() {
+  if (app.project) await persistNow();
+  const result = await busy("backing up every project…", async () => {
+    const recs = await store.listProjects();
+    if (!recs.length) throw new Error("there are no projects to back up");
+    const entries = [], skipped = [];
+    for (const [i, rec] of recs.entries()) {
+      try {
+        const { blob, filename } = await packProject(rec.id);
+        entries.push({ name: `${String(i + 1).padStart(3, "0")}-${filename}`, chunks: [new Uint8Array(await blob.arrayBuffer())] });
+      } catch (err) { console.error(err); skipped.push(rec.data?.name || rec.id); }
+    }
+    const day = new Date().toISOString().slice(0, 10);
+    return { blob: await makeZip(entries), filename: `huelite-backup-${day}-${entries.length}-projects.zip`, count: entries.length, skipped };
+  }).catch((err) => { console.error(err); toast(`couldn't back up: ${err.message}`, 3600); return null; });
+  if (!result) return;
+  if (result.skipped.length) toast(`${result.skipped.length} couldn't be packed: ${result.skipped.join(", ")}`, 5000);
+  await saveBlob(result.blob, result.filename);
+}
+
 /** The whole project as a desktop project folder, zipped. */
 async function exportProjectZip(id) {
   if (app.project?.id === id) await persistNow();
-  const result = await busy("packing project…", async () => {
-    const rec = await store.getProject(id);
-    const [source, prepped, solved] = await Promise.all(
-      ["source", "prepped", "solved"].map((n) => store.getFile(id, n)));
-    const st = rec.data.status;
-    return projectzip.pack({ data: rec.data, source,
-      prepped: st.prep === COMPLETE ? prepped : null,
-      solved: st.prep === COMPLETE && st.solve === COMPLETE ? solved : null });
-  }).catch((err) => { console.error(err); toast(`couldn't pack it: ${err.message}`, 3000); return null; });
+  const result = await busy("packing project…", () => packProject(id)).catch((err) => { console.error(err); toast(`couldn't pack it: ${err.message}`, 3000); return null; });
   if (result) await saveBlob(result.blob, result.filename);
 }
 
 async function importProjectZip(file) {
   await busy("importing…", async () => {
-    if (file.size > 400 * 1024 * 1024) throw new Error("that file is too big to be a HueLite project");
-    const { data, source, prepped, solved } = await projectzip.unpack(await file.arrayBuffer());
+    if (file.size > 2048 * 1024 * 1024) throw new Error("that file is too big to be a HueLite project");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    // a "back up all projects" file: one project .zip per entry
+    const inner = [...readZip(bytes)].filter(([n]) => /\.zip$/i.test(n) && !n.startsWith("__MACOSX/"));
+    if (inner.length) {
+      let ok = 0;
+      const failed = [];
+      for (const [n, read] of inner) {
+        try { await importProjectBytes(await read()); ok++; } catch (err) { console.error(err); failed.push(n); }
+      }
+      toast(`restored ${ok} project${ok === 1 ? "" : "s"}${failed.length ? ` · ${failed.length} failed` : ""}`, 3600);
+      return;
+    }
+    const data = await importProjectBytes(bytes);
+    toast(`imported "${data.name}"`, 2400);
+  }).catch((err) => { console.error(err); toast(`couldn't import: ${err.message}`, 3600); });
+  render();
+}
+
+async function importProjectBytes(bytes) {
+  {
+    const { data, source, prepped, solved } = await projectzip.unpack(bytes);
     if (!data.id || await store.getProject(data.id)) {
       // already on this phone: keep both
       if (data.id) data.name = `${data.name} (copy)`;
@@ -397,9 +442,8 @@ async function importProjectZip(file) {
       thumb = await thumbBlob(await createImageBitmap(source));
     }
     await store.saveProject(data, thumb);
-    toast(`imported "${data.name}"`, 2400);
-  }).catch((err) => { console.error(err); toast(`couldn't import: ${err.message}`, 3600); });
-  render();
+    return data;
+  }
 }
 
 const zipPicker = h("input", { type: "file", accept: ".zip,application/zip", hidden: true,
@@ -953,7 +997,8 @@ function menuProjects(screen) {
     newBtn,
     holder,
     head("files"),
-    h("button", { class: "btn wide", onclick: () => zipPicker.click() }, "import a project (.zip)"),
+    h("button", { class: "btn wide", onclick: () => backupAllProjects() }, "back up all projects (.zip)"),
+    h("button", { class: "btn wide gap-top", onclick: () => zipPicker.click() }, "import a project or a backup (.zip)"),
     h("p", { class: "meta" }, "zip a project folder on the Mac (Finder › Compress) and open it here, " +
       "or save one from here and unzip it into Documents/HueLite/projects on the Mac.")));
 
