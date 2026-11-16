@@ -9,7 +9,7 @@
    window and sets data-side / data-dual / data-short on <html>. */
 
 :root {
-  color-scheme: dark;   /* tells the browser this page is already dark: no forced dimming */
+  color-scheme: only dark;   /* tells the browser this page is already dark: no forced dimming */
   --mono: ui-monospace, "SF Mono", Menlo, "Roboto Mono", monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Roboto, sans-serif;
   --safe-top: env(safe-area-inset-top, 0px);
@@ -53,7 +53,7 @@ body { -webkit-user-select: none; user-select: none; font-family: var(--mono); f
 
 /* ---- header: "02 SOLVE" / project · subtitle ---- */
 .top-right { display: flex; align-items: center; gap: 8px; }
-.snd-btn { min-width: 40px; text-align: center; font-size: 14px; padding: 5px 9px !important; }
+.snd-btn { min-width: 44px; text-align: center; font-size: 15px; padding: 5px 9px !important; }
 .snd-btn.off { color: var(--dim); }
 .top { padding: calc(var(--safe-top) + 12px) 16px 8px; flex: none; }
 .top-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
@@ -90,8 +90,8 @@ html[data-side="1"] .pane.view { flex: 1.15 1 0; height: auto; }
 /* the view pane's own children */
 .view-bar { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px;
   margin: 2px 0 8px; }
-.view-bar .chips { flex: 1; min-width: 0; gap: 5px; }
-.view-bar .chip { padding: 7px 9px; }
+.view-bar .chips { flex: 1; min-width: 0; gap: 4px; flex-wrap: nowrap; }
+.view-bar .chip { padding: 7px 8px; white-space: nowrap; }
 .big-btn { flex: none; width: 34px; height: 34px; background: var(--well); border: 1px solid var(--line);
   color: var(--text); font-size: 15px; line-height: 1; }
 html[data-side="1"] .big-btn { display: none; }
@@ -263,17 +263,20 @@ label.field { display: flex; justify-content: space-between; align-items: center
 .shape-note { margin: 8px 0 0; min-height: 1.5em; }
 
 /* ---- filament table (Solve) ---- */
-.fil-table { display: grid; grid-template-columns: 16px 52px 1fr 1fr; gap: 6px 8px; align-items: center; }
-.fil-table .th { font-size: 11px; color: var(--muted); }
-.fil-table .idx { font-size: 12px; color: var(--muted); text-align: right; }
-.fil-table .sw { width: 52px; height: 44px; border: 1px solid var(--muted); padding: 0;
-  position: relative; }
-.fil-table .sw::after { content: ""; position: absolute; right: 2px; top: 2px; width: 0; height: 0;
-  border: 4px solid transparent; border-right-color: rgba(255,255,255,.85); border-top-color: rgba(255,255,255,.85);
+.fil-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.fil-card { border: 1px solid var(--line); background: var(--well); padding: 8px; display: grid;
+  grid-template-columns: 1fr 1fr; gap: 6px; }
+.fil-card-head { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.fil-card-name { display: flex; flex-direction: column; min-width: 0; font-size: 12px; }
+.fil-card-name .meta { margin: 0; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fil-grid .sw { width: 34px; height: 34px; flex: none; border: 1px solid var(--muted); padding: 0; position: relative; }
+.fil-grid .sw::after { content: ""; position: absolute; right: 2px; top: 2px; width: 0; height: 0;
+  border: 3px solid transparent; border-right-color: rgba(255,255,255,.85); border-top-color: rgba(255,255,255,.85);
   filter: drop-shadow(0 0 1px #000); }
-.fil-table .val { width: 100%; }
-.fil-table .sw .pr { position: absolute; left: 0; right: 0; bottom: 0; height: 9px; border-top: 1px solid rgba(0,0,0,.6); }
-.fil-table .sw .pr[hidden] { display: none; }
+.fil-grid .sw .pr { position: absolute; left: 0; right: 0; bottom: 0; height: 7px; border-top: 1px solid rgba(0,0,0,.6); }
+.fil-grid .sw .pr[hidden] { display: none; }
+.fil-field { display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: var(--muted); letter-spacing: .04em; min-width: 0; }
+.fil-field .val { width: 100%; min-height: 38px; font-size: 13px; }
 
 /* ---- export ---- */
 .slots { display: grid; gap: 6px; font-size: 12px; }
@@ -333,7 +336,7 @@ html[data-short="1"] .view-bar { margin-bottom: 4px; }
   letter-spacing: .08em; text-transform: uppercase; }
 
 /* ---- home: saved projects ---- */
-.brand.link { background: none; border: 1px solid var(--line); padding: 6px 10px; color: var(--text);
+.brand.link { background: none; border: 1px solid var(--line); padding: 6px 12px; min-height: 40px; color: var(--text);
   font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
 .projects { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .project { display: flex; align-items: stretch; gap: 6px; }
@@ -566,11 +569,11 @@ html[data-motion="calm"] *, html[data-motion="calm"] *::before, html[data-motion
   transition-duration: .01ms !important; }
 
 /* ---- main menu ---- */
-html[data-menu="1"]:not([data-side="1"]) .pane.view { height: 27dvh; }
+html[data-menu="1"]:not([data-side="1"]) .pane.view { height: 17dvh; }
 .hero { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
   text-align: center; background: var(--well); padding: 12px; }
-.hero-mark { display: flex; flex-direction: column; gap: 4px; width: 92px; margin-bottom: 8px; }
-.hero-mark i { display: block; height: 10px; transform-origin: left center; animation: hero-breathe 5s ease-in-out infinite; }
+.hero-mark { display: flex; flex-direction: column; gap: 3px; width: 64px; margin-bottom: 2px; }
+.hero-mark i { display: block; height: 6px; transform-origin: left center; animation: hero-breathe 5s ease-in-out infinite; }
 .hero-mark i:nth-child(1) { background: var(--layer-4); width: 100%; animation-delay: 0s; }
 .hero-mark i:nth-child(2) { background: var(--layer-3); width: 86%; animation-delay: .35s; }
 .hero-mark i:nth-child(3) { background: var(--layer-2); width: 72%; animation-delay: .7s; }
@@ -593,3 +596,124 @@ html[data-menu="1"]:not([data-side="1"]) .pane.view { height: 27dvh; }
 .mi-go { flex: none; font-size: 22px; color: var(--muted); }
 #app[data-enter] .menu-item { animation: group-in .62s var(--ease-out) backwards; animation-delay: calc(var(--i, 0) * 70ms + 140ms); }
 a.btn { display: block; text-decoration: none; text-align: center; color: var(--accent); }
+
+/* swatch inside a chip (back-art filament) */
+.chip-sw { display: inline-flex; align-items: center; gap: 6px; }
+.chip-sw > i { width: 12px; height: 12px; border: 1px solid var(--line); display: inline-block; }
+
+/* full-screen 3D view (Export): the view fills the screen, a button bar below */
+.gl-full { position: fixed; inset: 0; z-index: 70; background: var(--well); display: flex; flex-direction: column;
+  padding-top: env(safe-area-inset-top, 0px); animation: fade-in .18s ease-out backwards; }
+.gl-full > .gl-wrap { flex: 1 1 0; height: auto; }
+.gl-wrap.is-full .gl-hint { bottom: 10px; }
+.gl-nav { flex: none; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px;
+  padding: 8px 8px calc(env(safe-area-inset-bottom, 0px) + 8px); background: var(--bg, #111110);
+  border-top: 1px solid var(--line); }
+.gl-nav-btn { min-width: 48px; min-height: 48px; font-size: 18px; padding: 0 10px; touch-action: none; user-select: none;
+  -webkit-user-select: none; -webkit-touch-callout: none; }
+.gl-nav-btn:nth-last-child(-n+4) { font-size: 13px; }
+.gl-btn.on { background: var(--fill); border-color: var(--accent); }
+
+/* Samsung Internet's dark mode ignores color-scheme and recolours the page -
+   a #3B2019 swatch showed as light pink, so colours were picked by eye wrong.
+   It leaves a site alone when the stylesheet has its own dark-scheme rules,
+   so this block exists to say so (the app is always dark anyway). */
+@media (prefers-color-scheme: dark) {
+  :root { color-scheme: only dark; }
+}
+
+/* folders inside folders: each level is indented, with a rule down its side */
+.folder-body { margin-left: 10px; padding-left: 8px; border-left: 1px dotted var(--line); }
+.folder-body > .group-head:first-child { margin-top: 6px; }
+.folder-tree { display: flex; flex-direction: column; gap: 4px; }
+.folder-row { display: flex; align-items: center; gap: 6px; padding-left: calc(var(--depth, 0) * 16px); }
+.folder-pick { flex: 1; min-width: 0; text-align: left; min-height: 44px; padding: 0 12px; background: var(--well);
+  border: 1px solid var(--line); color: var(--text); font: 600 13px var(--mono); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.folder-pick.on { background: var(--fill); border-color: var(--accent); font-weight: 700; }
+.folder-ico { color: var(--muted); }
+.folder-add { flex: none; min-height: 44px; font-size: 11px; }
+.folder-in-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; color: var(--muted); }
+.folder-in-row .chip { min-height: 34px; font-size: 11px; }
+
+.group-head .group-more { flex: none; min-width: 46px; min-height: 40px; font-size: 16px; letter-spacing: 0; }
+.action-list { display: flex; flex-direction: column; gap: 8px; }
+.action-btn { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 10px 14px; }
+
+/* Export: the "saved" line sits across the top of the action bar */
+.action { flex-wrap: wrap; }
+.save-line { flex: 1 0 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  font-size: 11px; color: var(--muted); letter-spacing: .03em; min-height: 24px; }
+.save-line.bad { color: #e07a6a; }
+.save-now { background: none; border: 0; color: var(--accent); font: 700 11px var(--mono); letter-spacing: .06em;
+  text-decoration: underline; padding: 6px 0 6px 10px; min-height: 32px; }
+.pattern-row { display: flex; flex-direction: column; gap: 4px; }
+.pattern-row .meta { font-size: 11px; }
+
+/* main menu: the big three (new, continue, projects), then small tiles */
+.ico { display: inline-flex; width: 22px; height: 22px; flex: none; }
+.ico svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
+.menu-item .mi-n .ico { width: 24px; height: 24px; color: var(--accent); }
+.menu-item.lead { min-height: 76px; }
+.menu-item.lead .mi-t b { font-size: 17px; }
+.menu-item.first { background: color-mix(in srgb, var(--fill) 70%, var(--well)); }
+.menu-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 10px; }
+.menu-tile { min-height: 46px; padding: 6px 4px; border: 1px solid var(--line); background: transparent; color: var(--muted);
+  font: 700 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; border-radius: 999px; }
+.menu-tile:active { border-color: var(--accent); color: var(--text); }
+@media (max-width: 380px) { .menu-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+#app[data-enter] .menu-tiles { animation: group-in .62s var(--ease-out) backwards; animation-delay: calc(var(--i, 0) * 70ms + 140ms); }
+
+/* new project page */
+.new-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.new-bar .section-head { flex: 1; }
+.new-alt { display: flex; gap: 6px; }
+.new-src { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; }
+.new-src .ico { width: 18px; height: 18px; }
+.new-drop { width: 100%; min-height: 220px; margin-top: 10px; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 8px; border: 1.5px dashed var(--accent); background: var(--well); color: var(--text); }
+.new-drop .ico { width: 44px; height: 44px; color: var(--accent); }
+.new-drop b { font: 800 15px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+
+/* Prep: decimate leads */
+.decimate-box .range.key { padding: 4px 0 2px; }
+.decimate-box .range.key .range-head span:first-child { font-size: 14px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.suggest-row { display: grid; grid-template-columns: 1.4fr 1fr; gap: 8px; margin-top: 10px; }
+.suggest-row .chip, .suggest-row .btn { min-height: 46px; }
+.accent-btn { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+.more-box { border: 1px dotted var(--line); padding: 0 10px; }
+.more-box > summary { cursor: pointer; list-style: none; min-height: 46px; display: flex; align-items: center;
+  font-size: 11px; color: var(--muted); letter-spacing: .04em; }
+.more-box > summary::before { content: "▸"; margin-right: 8px; color: var(--accent); }
+.more-box[open] > summary::before { content: "▾"; }
+.more-box[open] { padding-bottom: 10px; }
+
+/* Export: back of the print as a labelled card of even button grids */
+.back-card { border: 1px solid var(--line); background: color-mix(in srgb, var(--well) 60%, transparent); padding: 4px 10px 10px; }
+.back-card.off .back-opts { opacity: .4; pointer-events: none; }
+.opt-label { margin: 12px 0 6px; font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.opt-grid { display: grid; grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr)); gap: 6px; }
+.opt-grid .chip { width: 100%; min-height: 46px; display: flex; align-items: center; justify-content: center; text-align: center;
+  padding: 6px 6px; white-space: normal; line-height: 1.2; }
+.two-line { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.two-line span { font-size: 10px; opacity: .75; }
+.pattern-row { margin-top: 6px; }
+.pattern-row .opt-grid .chip { min-height: 42px; font-size: 11px; }
+.back-fields { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+@media (min-width: 700px) { .back-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.field.stacked { display: flex; flex-direction: column; align-items: stretch; gap: 4px; font-size: 11px; color: var(--muted); }
+.field.stacked .val { width: 100%; }
+.back-card > .meta, .back-opts > .meta { margin-top: 10px; }
+
+/* the slot cards are narrow: no number spinners eating the TD / layers digits */
+.fil-field .val { padding-left: 8px; padding-right: 6px; -moz-appearance: textfield; appearance: textfield; }
+.fil-field .val::-webkit-inner-spin-button, .fil-field .val::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+
+/* how-it-works notes: off unless Settings › explanations is on */
+html:not([data-hints="on"]) .hint { display: none; }
+
+/* export: problems you must not miss, under the preview */
+.warn-box { margin-top: 6px; border: 1px solid #c9803a; background: rgba(201, 128, 58, .12); padding: 8px 10px;
+  font-size: 12px; line-height: 1.45; color: var(--text); }
+.warn-box p { margin: 0; }
+.warn-box p + p { margin-top: 6px; }

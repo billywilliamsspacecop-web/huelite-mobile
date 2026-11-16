@@ -22,14 +22,19 @@ import { downsampleMask, downsampleMax } from "./mesh.js";
 
 const EMPTY = 65535;          // height-texture value for "no print here"
 const RELIEFS = [1, 3, 6];    // z stretch: true scale, then easier to read
-const MIN_EL = 0.12, MAX_EL = 1.5;
+// nearly straight down to nearly straight up: under the plate too, to see the back
+const MIN_EL = -1.48, MAX_EL = 1.48;
+const MIN_ZOOM = 0.08, MAX_ZOOM = 4;     // zoom multiplies the fitted distance: small = close
+const SPIN_RAD_S = 0.45;                 // turntable speed
 const DEFAULT_EL = (30 * Math.PI) / 180;
 const FOV = (32 * Math.PI) / 180;
 const PLATE_MARGIN_MM = 4;
 
 // Camera state outlives any one view, so going Solve -> Export -> Solve
-// keeps the angle you turned to.
-const camera = { az: 0, el: DEFAULT_EL, zoom: 1, relief: 1 };
+// keeps the angle you turned to. flip: 0 = face up, 1 = turned over (Export
+// only, to read the back art).
+const camera = { az: 0, el: DEFAULT_EL, zoom: 1, relief: 1, flip: 0, pan: [0, 0] };
+const FLIP_MS = 520;
 
 // ---------------------------------------------------------------- matrices
 const mul = (a, b) => {
@@ -130,6 +135,31 @@ void main() {
   outColour = vec4(col * f, 1.0);
 }`;
 
+// The plate side of the print. The columns have no bottom faces, so this is
+// the only thing drawn there: the back art (engine/backart.js) as a texture,
+// already mirrored the way it prints. Outside the outline it is transparent.
+const BACK_VS = `#version 300 es
+precision highp float;
+layout(location = 0) in vec2 aPos;
+uniform mat4 uViewProj;
+uniform vec4 uRect;
+out vec2 vUv;
+void main() {
+  // the art is drawn as seen from below: its left edge is the model's +x side
+  vUv = vec2(1.0 - aPos.x, 1.0 - aPos.y);
+  gl_Position = uViewProj * vec4(mix(uRect.xy, uRect.zw, aPos), 0.0, 1.0);
+}`;
+const BACK_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uTex;
+out vec4 outColour;
+void main() {
+  vec4 c = texture(uTex, vUv);
+  if (c.a < 0.5) discard;
+  outColour = vec4(c.rgb, 1.0);
+}`;
+
 const PLATE_VS = `#version 300 es
 precision highp float;
 layout(location = 0) in vec2 aPos;
@@ -180,9 +210,9 @@ export function supportsView3D() {
  *
  *  scene: { heights, w, h, mask, lut, layerH, baseMm, physicalW, maxCols }
  *  heights is the solved layer count per pixel (Uint16Array, w*h). */
-export function createView3D({ onHint = true, pose = null, offscreen = false } = {}) {
+export function createView3D({ onHint = true, pose = null, offscreen = false, onFlip = null, fullscreen = false } = {}) {
   // a fixed pose (thumbnails) keeps its own camera; the on-screen view shares one
-  const cam = pose ? { az: 0, el: DEFAULT_EL, zoom: 1, relief: 1, ...pose } : camera;
+  const cam = pose ? { az: 0, el: DEFAULT_EL, zoom: 1, relief: 1, flip: 0, pan: [0, 0], ...pose } : camera;
   const canvas = document.createElement("canvas");
   canvas.className = "gl-canvas";
   let gl;
@@ -196,17 +226,26 @@ export function createView3D({ onHint = true, pose = null, offscreen = false } =
   wrap.className = "gl-wrap";
   const hint = document.createElement("span");
   hint.className = "gl-hint";
-  hint.textContent = "drag to turn · pinch to zoom";
+  hint.textContent = "drag to turn · pinch to zoom · two fingers to move";
   const reliefBtn = document.createElement("button");
   reliefBtn.type = "button";
   reliefBtn.className = "gl-btn";
+  const flipBtn = document.createElement("button");
+  flipBtn.type = "button";
+  flipBtn.className = "gl-btn";
+  flipBtn.hidden = true;                 // shown once there is a back to look at
   const resetBtn = document.createElement("button");
   resetBtn.type = "button";
   resetBtn.className = "gl-btn";
   resetBtn.textContent = "⟲ view";
   const tools = document.createElement("div");
   tools.className = "gl-tools";
-  tools.append(reliefBtn, resetBtn);
+  const fullBtn = document.createElement("button");
+  fullBtn.type = "button";
+  fullBtn.className = "gl-btn";
+  fullBtn.textContent = "⤢ full";
+  fullBtn.hidden = !fullscreen;
+  tools.append(flipBtn, reliefBtn, resetBtn, fullBtn);
   wrap.append(canvas, ...(onHint && !pose ? [hint] : []), ...(pose ? [] : [tools]));
 
   let res = null;         // gl objects, rebuilt after a context loss
@@ -220,6 +259,7 @@ export function createView3D({ onHint = true, pose = null, offscreen = false } =
   function init() {
     const col = program(gl, COLUMN_VS, COLUMN_FS);
     const plate = program(gl, PLATE_VS, PLATE_FS);
+    const backProg = program(gl, BACK_VS, BACK_FS);
     const loc = (p, names) => Object.fromEntries(names.map((n) => [n, gl.getUniformLocation(p, n)]));
     const vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
@@ -246,8 +286,10 @@ export function createView3D({ onHint = true, pose = null, offscreen = false } =
       col, plate, vao, pvao,
       cu: loc(col, ["uHeights", "uViewProj", "uGrid", "uCell", "uOrigin", "uZ", "uRelief", "uLut", "uLutN", "uViewRot"]),
       pu: loc(plate, ["uViewProj", "uRect", "uZ", "uColour"]),
-      lutTex: null,
+      backProg, bu: loc(backProg, ["uViewProj", "uRect", "uTex"]),
+      lutTex: null, backTex: null,
     };
+    uploadBack();
   }
 
   function texture(internal, format, type, w, h, data, align) {
@@ -260,6 +302,17 @@ export function createView3D({ onHint = true, pose = null, offscreen = false } =
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     return t;
+  }
+
+  let back = null;        // { image: ImageData, widthMm, heightMm }
+  function uploadBack() {
+    if (!res) return;
+    if (res.backTex) { gl.deleteTexture(res.backTex); res.backTex = null; }
+    if (!back) return;
+    const t = texture(gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, back.image.width, back.image.height, back.image.data, 4);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    res.backTex = t;
   }
 
   function freeLevels() {
@@ -349,8 +402,19 @@ export function createView3D({ onHint = true, pose = null, offscreen = false } =
     if (!res.fit || res.fit.aspect !== aspect) res.fit = { aspect, dist: fitDistance(aspect) };
     const { widthMm: W, depthMm: D, topMm, layerH, baseMm } = res.geo;
     const T = topMm * cam.relief;
-    const centre = [0, 0, T / 2];
-    const { vp, view } = matrices(aspect, res.fit.dist * cam.zoom, cam.el, cam.az, centre);
+    const centre = [cam.pan[0], cam.pan[1], T / 2];
+    const dist = res.fit.dist * cam.zoom;
+    const { vp, view: camView } = matrices(aspect, dist, cam.el, cam.az, centre);
+    lastCam = { view: camView, dist, h: ch };
+    // turning the print over: half a turn about the y axis through its middle,
+    // like turning a card, so it lands face down on the plate
+    const th = Math.PI * flipT;
+    const c = Math.cos(th), sn = Math.sin(th), zc = T / 2;
+    const lift = sn * W / 2;               // mid-turn it stands on edge: lift it clear of the plate
+    const model = Float32Array.from([c, 0, -sn, 0, 0, 1, 0, 0, sn, 0, c, 0,
+                                     -sn * zc, 0, zc - c * zc + lift, 1]);
+    const mvp = flipT ? mul(vp, model) : vp;
+    const view = flipT ? mul(camView, model) : camView;
 
     gl.viewport(0, 0, cw, ch);
     gl.clearColor(0.098, 0.098, 0.09, 1);
@@ -359,7 +423,9 @@ export function createView3D({ onHint = true, pose = null, offscreen = false } =
     gl.disable(gl.CULL_FACE);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    // the plate
+    // the plate - left out from underneath, so the print's back shows
+    const eyeZ = centre[2] + dist * Math.sin(cam.el);
+    if (eyeZ > 0) {
     gl.useProgram(res.plate);
     gl.uniformMatrix4fv(res.pu.uViewProj, false, vp);
     gl.uniform4f(res.pu.uRect, -W / 2 - PLATE_MARGIN_MM, -D / 2 - PLATE_MARGIN_MM,
@@ -368,11 +434,24 @@ export function createView3D({ onHint = true, pose = null, offscreen = false } =
     gl.uniform3f(res.pu.uColour, 0.165, 0.165, 0.15);
     gl.bindVertexArray(res.pvao);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
+    }
+
+    // the plate side
+    if (res.backTex && back) {
+      gl.useProgram(res.backProg);
+      gl.uniformMatrix4fv(res.bu.uViewProj, false, mvp);
+      gl.uniform4f(res.bu.uRect, -back.widthMm / 2, -back.heightMm / 2, back.widthMm / 2, back.heightMm / 2);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, res.backTex);
+      gl.uniform1i(res.bu.uTex, 0);
+      gl.bindVertexArray(res.pvao);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+    }
 
     // the print
     const lv = interacting && levels.length > 1 ? levels[1] : levels[0];
     gl.useProgram(res.col);
-    gl.uniformMatrix4fv(res.cu.uViewProj, false, vp);
+    gl.uniformMatrix4fv(res.cu.uViewProj, false, mvp);
     gl.uniformMatrix3fv(res.cu.uViewRot, false, Float32Array.from([
       view[0], view[1], view[2], view[4], view[5], view[6], view[8], view[9], view[10]]));
     gl.uniform2i(res.cu.uGrid, lv.cols, lv.rows);
@@ -393,6 +472,68 @@ export function createView3D({ onHint = true, pose = null, offscreen = false } =
   }
 
   const queue = () => { if (!raf && !destroyed) raf = requestAnimationFrame(draw); };
+  let lastCam = null;
+
+  // turntable: spins until a finger takes over
+  let spin = 0, spinLast = 0;
+  const spinListeners = new Set();
+  function setSpin(on) {
+    if (!!spin === !!on) return;
+    cancelAnimationFrame(spin);
+    spin = 0;
+    if (on) {
+      spinLast = performance.now();
+      const step = (now) => {
+        cam.az -= SPIN_RAD_S * Math.min(0.1, (now - spinLast) / 1000);
+        spinLast = now;
+        draw();
+        if (!destroyed) spin = requestAnimationFrame(step);
+      };
+      spin = requestAnimationFrame(step);
+    }
+    spinListeners.forEach((f) => f(!!spin));
+  }
+
+  /** Move the look-at point by a screen drag of (dx, dy) CSS pixels. */
+  function panBy(dx, dy) {
+    if (!lastCam) return;
+    const dpr = canvas.width / Math.max(1, canvas.clientWidth);
+    const mmPerPx = (2 * lastCam.dist * Math.tan(FOV / 2)) / lastCam.h * dpr;
+    const v = lastCam.view;      // rows of the view matrix: camera right and up in world space
+    const right = [v[0], v[4], v[8]], up = [v[1], v[5], v[9]];
+    cam.pan[0] += (-dx * right[0] + dy * up[0]) * mmPerPx;
+    cam.pan[1] += (-dx * right[1] + dy * up[1]) * mmPerPx;
+    if (res?.geo) {               // never lose the print off screen
+      const lim = Math.max(res.geo.widthMm, res.geo.depthMm) * 0.75;
+      cam.pan[0] = Math.max(-lim, Math.min(lim, cam.pan[0]));
+      cam.pan[1] = Math.max(-lim, Math.min(lim, cam.pan[1]));
+    }
+  }
+
+  // flip animation: flipT runs 0 -> 1 (face up -> turned over) or back
+  let flipT = pose ? 0 : cam.flip;
+  let flipAnim = 0;
+  const paintFlip = () => { flipBtn.textContent = cam.flip ? "⇅ front" : "⇅ back"; };
+  function animateFlip() {
+    cancelAnimationFrame(flipAnim);
+    const from = flipT, to = cam.flip, t0 = performance.now();
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const step = (now) => {
+      const k = reduce ? 1 : Math.min(1, (now - t0) / FLIP_MS);
+      const e = k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2;
+      flipT = from + (to - from) * e;
+      draw();
+      if (k < 1 && !destroyed) flipAnim = requestAnimationFrame(step);
+    };
+    flipAnim = requestAnimationFrame(step);
+  }
+  flipBtn.addEventListener("click", () => {
+    cam.flip = cam.flip ? 0 : 1;
+    paintFlip();
+    animateFlip();
+    onFlip?.(cam.flip);
+  });
+  paintFlip();
 
   function settle() {
     clearTimeout(timer);
@@ -413,14 +554,17 @@ export function createView3D({ onHint = true, pose = null, offscreen = false } =
 
   // ---- gestures
   const pointers = new Map();
-  let lastTap = 0, tapMoved = false, pinch = 0;
+  let lastTap = 0, tapMoved = false, pinch = 0, mid = null;
+  const midpoint = () => { const [a, b] = [...pointers.values()]; return [(a.x + b.x) / 2, (a.y + b.y) / 2]; };
   canvas.addEventListener("pointerdown", (e) => {
     try { canvas.setPointerCapture(e.pointerId); } catch { /* synthetic or lost pointer */ }
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     tapMoved = false;
+    setSpin(false);
     if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
       pinch = Math.hypot(a.x - b.x, a.y - b.y);
+      mid = midpoint();
     }
     e.preventDefault();
   });
@@ -436,14 +580,18 @@ export function createView3D({ onHint = true, pose = null, offscreen = false } =
     } else if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
       const d = Math.hypot(a.x - b.x, a.y - b.y);
-      if (pinch > 0 && d > 0) cam.zoom = Math.min(3, Math.max(0.25, cam.zoom * (pinch / d)));
+      if (pinch > 0 && d > 0) cam.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, cam.zoom * (pinch / d)));
       pinch = d;
+      const m = midpoint();
+      if (mid) panBy(m[0] - mid[0], m[1] - mid[1]);
+      mid = m;
     }
     touched();
   });
   const up = (e) => {
     if (!pointers.delete(e.pointerId)) return;
     pinch = 0;
+    mid = null;
     if (e.type === "pointerup" && !tapMoved && pointers.size === 0) {
       const now = performance.now();
       if (now - lastTap < 320) { api.resetCamera(); lastTap = 0; } else lastTap = now;
@@ -454,7 +602,7 @@ export function createView3D({ onHint = true, pose = null, offscreen = false } =
   canvas.addEventListener("pointercancel", up);
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
-    cam.zoom = Math.min(3, Math.max(0.25, cam.zoom * Math.exp(e.deltaY * 0.0012)));
+    cam.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, cam.zoom * Math.exp(e.deltaY * 0.0012)));
     touched();
   }, { passive: false });
 
@@ -466,6 +614,72 @@ export function createView3D({ onHint = true, pose = null, offscreen = false } =
     queue();
   });
   resetBtn.addEventListener("click", () => api.resetCamera());
+
+  // ---- full screen: the view moves into an overlay with a button bar, and
+  // back again on close. An overlay, not the Fullscreen API: iPhone Safari
+  // has no element full screen.
+  let full = null;
+  function openFull() {
+    if (full) return;
+    const home = document.createComment("gl-view");
+    wrap.replaceWith(home);
+    const overlay = document.createElement("div");
+    overlay.className = "gl-full";
+    const bar = document.createElement("div");
+    bar.className = "gl-nav";
+    const btn = (label, title, onPress, { repeat = false } = {}) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "gl-btn gl-nav-btn"; b.textContent = label; b.title = title;
+      b.setAttribute("aria-label", title);
+      if (repeat) {           // hold to keep going
+        let t = 0;
+        const stop = () => { clearInterval(t); t = 0; settle(); };
+        b.addEventListener("pointerdown", (e) => { e.preventDefault(); setSpin(false); onPress(); t = setInterval(onPress, 60); });
+        for (const ev of ["pointerup", "pointercancel", "pointerleave"]) b.addEventListener(ev, stop);
+      } else b.addEventListener("click", onPress);
+      return b;
+    };
+    const orbit = (daz, del) => () => { cam.az += daz; cam.el = Math.min(MAX_EL, Math.max(MIN_EL, cam.el + del)); touched(); };
+    const zoom = (f) => () => { cam.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, cam.zoom * f)); touched(); };
+    const spinBtn = btn("⟳ spin", "spin", () => setSpin(!spin));
+    const paintSpin = (on) => spinBtn.classList.toggle("on", on);
+    spinListeners.add(paintSpin);
+    const flip2 = btn("⇅", "turn over", () => flipBtn.click());
+    flip2.hidden = flipBtn.hidden;
+    bar.append(
+      btn("◀", "turn left", orbit(0.06, 0), { repeat: true }),
+      btn("▲", "tilt up", orbit(0, 0.05), { repeat: true }),
+      btn("▼", "tilt down", orbit(0, -0.05), { repeat: true }),
+      btn("▶", "turn right", orbit(-0.06, 0), { repeat: true }),
+      btn("−", "zoom out", zoom(1.08), { repeat: true }),
+      btn("+", "zoom in", zoom(1 / 1.08), { repeat: true }),
+      spinBtn, flip2,
+      btn("⟲", "reset view", () => api.resetCamera()),
+      btn("✕", "close", closeFull));
+    overlay.append(wrap, bar);
+    document.body.append(overlay);
+    wrap.classList.add("is-full");
+    fullBtn.hidden = true;
+    const onKey = (e) => { if (e.key === "Escape") closeFull(); };
+    document.addEventListener("keydown", onKey);
+    full = { home, overlay, onKey, paintSpin };
+    if (res) res.fit = null;
+    queue();
+  }
+  function closeFull() {
+    if (!full) return;
+    setSpin(false);
+    spinListeners.delete(full.paintSpin);
+    document.removeEventListener("keydown", full.onKey);
+    wrap.classList.remove("is-full");
+    if (full.home.isConnected) full.home.replaceWith(wrap); else wrap.remove();
+    full.overlay.remove();
+    full = null;
+    fullBtn.hidden = !fullscreen;
+    if (res) res.fit = null;
+    queue();
+  }
+  fullBtn.addEventListener("click", openFull);
   paintRelief();
 
   // a phone can take the GL context away when the app is backgrounded
@@ -483,10 +697,29 @@ export function createView3D({ onHint = true, pose = null, offscreen = false } =
       if (res) { build(); queue(); }
     },
     resetCamera() {
-      cam.az = 0; cam.el = DEFAULT_EL; cam.zoom = 1;
+      cam.az = 0; cam.el = DEFAULT_EL; cam.zoom = 1; cam.pan = [0, 0];
       queue();
     },
+    openFull,
+    closeFull,
     redraw: queue,
+    /** The plate side: { image: ImageData (transparent outside the outline,
+     *  as seen turned over), widthMm, heightMm } - or null for none. Shows
+     *  the flip button. */
+    setBack(next) {
+      back = next;
+      uploadBack();
+      flipBtn.hidden = !next || !!pose;
+      if (!next && flipT) { cam.flip = 0; flipT = 0; paintFlip(); }
+      queue();
+    },
+    /** Turn the print over (true) or back face up. */
+    setFlipped(on) {
+      if (!back || !!cam.flip === !!on) return;
+      cam.flip = on ? 1 : 0;
+      paintFlip();
+      animateFlip();
+    },
     /** Draw once at an explicit size and return a PNG blob (for thumbnails). */
     snapshot(w, h) {
       canvas.width = w; canvas.height = h;
@@ -495,8 +728,11 @@ export function createView3D({ onHint = true, pose = null, offscreen = false } =
       return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
     },
     destroy() {
+      if (full) closeFull();
       destroyed = true;
+      cancelAnimationFrame(spin);
       cancelAnimationFrame(raf);
+      cancelAnimationFrame(flipAnim);
       clearTimeout(timer);
       ro.disconnect();
       wrap.remove();

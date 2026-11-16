@@ -20,8 +20,10 @@ Prep → Solve → Export all run on the phone, with no server.
 | Colour fit: filament colours chosen so the *printed* stack matches the photo | done |
 | Export: Bambu 3MF + STL + slot note, cost/purge estimate, share sheet or download | done |
 | Opens in Bambu Studio with the right filaments, colours and 0.08 mm layers (A1) | done |
+| Back art: topo lines + Print-Brick info block printed on the plate side, mirrored | done |
 | Prep adjustments, presets, suggest for print (pixel-identical to the desktop) | done |
 | Saving projects between launches (IndexedDB), project list | done |
+| Folders inside folders on the project list ("Christmas/Smith family") | done |
 | Project .zip export/import, same folder layout as the desktop | done |
 
 The project data mirrors the desktop `project.json` schema, so projects can
@@ -42,6 +44,13 @@ scroll, so the preview never scrolls away while you tune.
 `main.js` measures the window and sets `data-side` / `data-dual` /
 `data-short` on `<html>`; it re-lays out on fold, unfold and rotate, and
 never mid-typing (a soft keyboard shrinks the window).
+
+3D view: drag turns it all the way round, under the plate too (the plate
+hides from below, so the back art shows); pinch zooms (much closer than
+before), two fingers move it. On Export, `⤢ full` opens it full screen with
+a button bar: turn and tilt arrows and zoom (hold to repeat), a turntable
+spin, turn over, reset and close. It's an overlay rather than the
+Fullscreen API, because iPhone Safari has no element full screen.
 
 Touch: sliders (`src/ui.js`) only move when you grab the handle, so a finger
 scrolling past never changes a value. The handle is a 40 x 54 px grip on a
@@ -104,6 +113,58 @@ the file loads, the same triangles come out, and the exported settings show our
 colours, `layer_height 0.08` and the A1 printer, for 2, 3 and 4 filaments. A
 file with the old config makes it report a single default filament and 0.2 mm.
 
+**Prime tower:** Studio makes the tower as deep as the purge needs (about
+38 mm for a 4-colour print), so parking it at `y = 238` ran it off the back of
+the plate and Studio's send-to-printer check refused the file ("G-code outside
+of the printable area"). It now sits at `y = 193`.
+
+**Size limits and warnings:** print width is capped at 240 mm (the 256 mm plate
+less a 5 mm brim and a 3 mm edge each side). Under the Export preview, an orange
+box warns when the prime tower has no room beside or behind the print
+(`placement().towerFits` is false, roughly over 205 mm in both directions) and
+when STL is on and the file would pass ~60 MB (50 bytes a triangle). A very
+detailed photo on fine detail can reach 5 million triangles.
+
+### Back art
+
+Export can print art on the plate side, in the first 1-3 layers, in a second
+filament: an inset border following the outline, topographic lines (seeded
+from the print's name), and a title block in the bottom-right corner like the
+Print-Brick business cards (three-bar logo, brand, the print's name, maker,
+email). It is mirrored, so it reads when the print is turned over
+left-to-right. The topo pattern follows the print's name until `↻ new pattern`
+picks a random one (kept in the project as `export.back.seed`; `↶ previous`
+steps back, `from name` returns to the name). The `back` view on the Export screen shows it, and the 3D
+view's `⇅ back` button turns the print over (an animated half-turn, like a
+card) with the art drawn on its underside, so you can zoom in and check the
+name and email. The 3D view's columns have no bottom faces, so the art is one
+textured quad at z = 0 (`setBack()` in `engine/view3d.js`), rendered at about
+0.12 mm a pixel.
+
+- `engine/backart.js` draws it as a coverage field (text through a canvas with
+  the bundled JetBrains Mono ExtraBold, OFL); `engine/outline.js` traces that
+  into smooth outlines (marching squares, simplified, earcut) and extrudes
+  them.
+- The first layers are two parts that fit together: the base filament with
+  the art cut out (`Base, first layers`, slot 1) and the art (`Back art`);
+  the columns start above them (`buildModel({ bottomMm })`). The art's pixels
+  line up with the mesh cells, so the cut-out base meets the columns exactly.
+  Nothing overlaps, so the same parts go into the 3MF and the STL. (Bambu
+  Studio would also accept an overlapping part - it gives the overlap to the
+  later part - but an STL can't.)
+- A file with back art also carries the business cards' first-layer settings
+  (Arachne, thin walls, 0.42 mm first-layer lines, no elephant-foot
+  compensation): with the stock ones small letters and the hyphen dropped out.
+- Sizes from the card test prints: lines at least 0.6 mm, the email at least
+  3.6 mm (3.0 only when a print is too small, with a note), letters thickened
+  by 0.28 mm.
+- Filament: `auto` picks the one that stands out most against slot 1. The
+  art never takes the whole base; at least one base layer stays above it.
+- On by default, in every export. The STL carries the same parts in one
+  colour; in Studio, "split to parts" separates them to colour by hand.
+- Maker, email and brand are kept per phone (localStorage); the defaults
+  live in `BACK_DEFAULTS`.
+
 Notes: the config is from Studio 02.08.02.61; an older Studio may say the file
 is newer. The desktop exporter has the same two problems and wants the same
 change. Studio keeps its log encrypted, so the exact rejection reason is
@@ -118,7 +179,8 @@ project saves and returns here; "‹ menu" backs out of a sub-page.
 
 - **Projects** keeps everything the old page had: list or album, folders, move,
   zip, delete, import.
-- **Settings**: sound on/off, volume and a demo; motion (full or calm); swipe
+- **Settings**: explanations (the how-it-works notes, class `hint`, hidden by
+  default); sound on/off, volume and a demo; motion (full or calm); swipe
   between stages on/off; how much storage projects use; reset settings (never
   touches projects). Stored in `localStorage` as `huelite.*`.
 - **Help**: the three steps, moving around, gestures, tips.

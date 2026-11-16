@@ -97,17 +97,25 @@ export function snappedBaseMm(baseLayers, layerH) {
 }
 
 /** Returns { parts: [{name, extruder, boxes: Float32Array(6n)}], stats }. */
-export function buildModel({ heights, w, h, mask, physicalW, layerH, baseLayers, filaments,
-                             detail = "standard", name = "HueLite model" }) {
-  const baseMm = snappedBaseMm(baseLayers, layerH);
+/** The mesh's cell grid: downsampled heights and footprint, cell size, and
+ *  the model's extent (centred on 0, row 0 at +Y). The back art is drawn
+ *  over the same extent so it lines up with the mesh exactly. */
+export function modelGrid({ heights, w, h, mask, physicalW, detail = "standard" }) {
   const pxMm = physicalW / w;
   const target = MESH_DETAIL[detail] ?? MESH_DETAIL.standard;
   const factor = target ? Math.max(1, Math.round(target / pxMm)) : 1;
   const g = downsampleMax(heights, w, h, factor);
   const inside = downsampleMask(mask, w, h, factor);
-  const rows = g.h, cols = g.w;
   const cell = physicalW / w * factor;
-  const widthMm = cols * cell, heightMm = rows * cell;
+  return { g, inside, rows: g.h, cols: g.w, cell, widthMm: g.w * cell, heightMm: g.h * cell };
+}
+
+/** bottomMm > 0 starts the first band that high, leaving the layers under
+ *  it to the back-art parts (backart.backParts). */
+export function buildModel({ heights, w, h, mask, physicalW, layerH, baseLayers, filaments,
+                             detail = "standard", name = "HueLite model", bottomMm = 0 }) {
+  const baseMm = snappedBaseMm(baseLayers, layerH);
+  const { g, inside, rows, cols, cell, widthMm, heightMm } = modelGrid({ heights, w, h, mask, physicalW, detail });
   const x0 = -widthMm / 2;
 
   const parts = [];
@@ -122,7 +130,7 @@ export function buildModel({ heights, w, h, mask, physicalW, layerH, baseLayers,
       zTop[i] = baseMm + Math.min(band.end_h, Math.max(lo, v)) * layerH;
     }
     if (!any) continue;
-    const zBottom = band.start_h < 0 ? 0 : baseMm + band.start_h * layerH;
+    const zBottom = band.start_h < 0 ? bottomMm : baseMm + band.start_h * layerH;
     const boxes = [];
     for (const [c0, c1, r0, r1, zt] of mergeStrips(part, zTop, cols, rows)) {
       // row 0 is the top of the photo = back of the plate (larger Y)
@@ -133,6 +141,15 @@ export function buildModel({ heights, w, h, mask, physicalW, layerH, baseLayers,
   }
   const nBoxes = parts.reduce((s, p) => s + p.boxes.length / 6, 0);
   return { parts, name, stats: { parts: parts.length, triangles: nBoxes * 12, vertices: nBoxes * 8 } };
+}
+
+/** Add a triangle-mesh part ({ name, extruder, mesh: { vertices, triangles } }). */
+export function addMeshPart(model, part) {
+  model.parts.push(part);
+  model.stats.parts += 1;
+  model.stats.triangles += part.mesh.triangles.length / 3;
+  model.stats.vertices += part.mesh.vertices.length / 3;
+  return model;
 }
 
 // ---------------------------------------------------------------- shading
@@ -254,7 +271,7 @@ export function renderOblique({ heights, w, h, lut, mask, baseHex, layerH, baseM
 
 /** Ballpark cost, purge waste and colour switches - same box model. */
 export function estimates({ heights, w, h, mask, filaments, layerH, baseLayers, physicalW,
-                            pricePerKg = 25, bandMode = "solid" }) {
+                            pricePerKg = 25, bandMode = "solid", back = null }) {
   const baseMm = baseLayers * layerH;
   const cell = physicalW / w, area = cell * cell;
   const perSlot = {};
@@ -285,6 +302,9 @@ export function estimates({ heights, w, h, mask, filaments, layerH, baseLayers, 
   // a colour layer is printed if some column reaches above it
   let switches = 0;
   for (let k = 1; k < Math.min(maxH, tallest); k++) if (owner[k] !== owner[k - 1]) switches++;
+  // back art: both filaments on each of its layers, then back to the base
+  const backSwitches = back && back.slot !== filaments[0]?.slot ? back.layers + 1 : 0;
+  switches += backSwitches;
 
   let x0 = w, x1 = -1, y0 = h, y1 = -1;
   if (mask) {

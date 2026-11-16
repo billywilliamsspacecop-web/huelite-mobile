@@ -12,6 +12,34 @@ export const COMPLETE = "complete";
 // and far more detail than a 100-250 mm print can show anyway.
 export const MOBILE_OUTPUT_PX = 800;
 
+// ---------------------------------------------------------------- folders
+// A project's folder is a path: "Christmas/Smith family" is the folder
+// "Smith family" inside "Christmas". Folders exist only through the
+// projects filed in them, so there is nothing else to keep in step.
+export const FOLDER_PATH_MAX = 160;
+export const FOLDER_NAME_MAX = 40;
+export const FOLDER_DEPTH_MAX = 5;
+
+/** Tidy a path: trimmed names, no empty parts, at most FOLDER_DEPTH_MAX deep. */
+export function folderPath(p) {
+  return String(p || "").split("/").map((s) => s.trim().slice(0, FOLDER_NAME_MAX)).filter(Boolean)
+    .slice(0, FOLDER_DEPTH_MAX).join("/").slice(0, FOLDER_PATH_MAX);
+}
+/** A folder name typed by hand: "/" would start a new level, so it becomes "-". */
+export const folderName = (s) => String(s || "").replace(/\//g, "-").trim().slice(0, FOLDER_NAME_MAX);
+export const folderParent = (p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
+export const folderLeaf = (p) => p.slice(p.lastIndexOf("/") + 1);
+export const joinFolder = (parent, name) => folderPath(parent ? `${parent}/${name}` : name);
+/** Every folder the paths imply, ancestors included, sorted so a parent comes before its children. */
+export function allFolders(paths) {
+  const out = new Set();
+  for (const p of paths) {
+    const parts = folderPath(p).split("/").filter(Boolean);
+    for (let i = 1; i <= parts.length; i++) out.add(parts.slice(0, i).join("/"));
+  }
+  return [...out].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base", numeric: true }));
+}
+
 export const DEFAULT_FILAMENTS = [
   { slot: 1, name: "Black", hex: "#101010", td_mm: 0.4, band_layers: 12 },
   { slot: 2, name: "Blue", hex: "#0B39B5", td_mm: 0.8, band_layers: 12 },
@@ -50,7 +78,7 @@ export function defaultData(name) {
       rotate_deg: 0,
       flip_h: false,
       output_px: [MOBILE_OUTPUT_PX, MOBILE_OUTPUT_PX],
-      physical_width_mm: 120.0,
+      physical_width_mm: 200.0,   // the user's usual size (Prep still trims it to fit the A1 plate)
       adjustments: {
         brightness: 0, contrast: 0, saturation: 0,
         denoise: 0, sharpen: 0, pixelize: 0, decimate: 0,
@@ -66,8 +94,8 @@ export function defaultData(name) {
       filaments: DEFAULT_FILAMENTS.map((f) => ({ ...f })),
       dither: "bayer8",
       dither_amount: 1.0,
-      band_mode: "solid",
-      slope_mm_per_layer: 0.3,
+      band_mode: "blend",          // translucent blend: better results than solid bands in the user's prints
+      slope_mm_per_layer: 0.05,      // foundations
       colours_seeded: false,
       colours_auto: false,   // colours were picked by the fit, so they follow the stack
       border: { enabled: true, width_mm: 3.0, mode: "raised", frame_slot: 1 },
@@ -77,6 +105,8 @@ export function defaultData(name) {
       formats: ["3mf"],
       last_export: null,
       price_per_kg: 25.0,
+      // art printed on the plate side (engine/backart.js); slot 0 = pick the most contrasting filament
+      back: { enabled: true, slot: 0, layers: 2, pattern: "topo", seed: 0 },   // seed 0 = pattern from the name
     },
   };
 }
@@ -101,7 +131,8 @@ export function sanitizeProject(raw) {
   out.created = text(d.created, base.created, 40);
   out.modified = text(d.modified, base.modified, 40);
   out.folder = text(d.folder, "", 200);
-  out.group = text(d.group, "", 60).trim();   // phone-only: the folder it is filed under on the home screen
+  // phone-only: the folder it is filed under on the home screen, as a path ("Christmas/Smith family")
+  out.group = folderPath(text(d.group, "", FOLDER_PATH_MAX));
   const st = obj(d.status);
   out.status = Object.fromEntries(STAGES.map((k) => [k, st[k] === COMPLETE ? COMPLETE : PENDING]));
   out.source = { ...base.source, ...obj(d.source) };
@@ -149,8 +180,8 @@ export function sanitizeProject(raw) {
     filaments: fils.length ? fils : bs.filaments,
     dither: pick(so.dither, ["bayer8", "none"], "bayer8"),
     dither_amount: num(so.dither_amount, 1, 0, 4),
-    band_mode: pick(so.band_mode, ["solid", "blend"], "solid"),
-    slope_mm_per_layer: num(so.slope_mm_per_layer, 0.3, 0, 5),
+    band_mode: pick(so.band_mode, ["solid", "blend"], "blend"),
+    slope_mm_per_layer: num(so.slope_mm_per_layer, 0.05, 0, 5),
     colours_seeded: so.colours_seeded === true,
     colours_auto: so.colours_auto === true,
     border: { ...bs.border, ...bo,
@@ -162,6 +193,10 @@ export function sanitizeProject(raw) {
   const ex = obj(d.export);
   out.export = { ...base.export, ...ex, price_per_kg: num(ex.price_per_kg, 25, 0, 100000),
                  formats: Array.isArray(ex.formats) ? ex.formats.filter((f) => f === "3mf" || f === "stl") : ["3mf"] };
+  const bk = obj(ex.back);
+  out.export.back = { enabled: bk.enabled !== false, slot: Math.round(num(bk.slot, 0, 0, 8)),
+                      layers: Math.round(num(bk.layers, 2, 1, 3)), pattern: pick(bk.pattern, ["topo", "plain"], "topo"),
+                      seed: Math.round(num(bk.seed, 0, 0, 4294967295)) };
   return out;
 }
 

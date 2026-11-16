@@ -1,10 +1,12 @@
-import { app, canOpen, COMPLETE, DEFAULT_FILAMENTS, defaultData, MOBILE_OUTPUT_PX, PENDING,
-         sanitizeProject, setStatus, STAGE_LABELS, STAGE_REQUIRES, STAGES } from "./state.js";
+import { allFolders, app, canOpen, COMPLETE, DEFAULT_FILAMENTS, defaultData, folderLeaf, folderName, folderParent,
+         joinFolder, MOBILE_OUTPUT_PX, PENDING, sanitizeProject, setStatus, STAGE_LABELS, STAGE_REQUIRES,
+         STAGES } from "./state.js";
 import { ASPECTS, createCropper, loadPhoto } from "./crop.js";
 import * as shape from "./engine/shape.js";
 import * as solve from "./engine/solve.js";
 import * as mesh from "./engine/mesh.js";
 import * as bambu3mf from "./engine/bambu3mf.js";
+import * as backart from "./engine/backart.js";
 import * as imaging from "./engine/imaging.js";
 import { createView3D, renderSideThumb } from "./engine/view3d.js";
 import { attachSwipe } from "./swipe.js";
@@ -13,7 +15,7 @@ import * as store from "./store.js";
 import * as projectzip from "./engine/projectzip.js";
 import { uuid } from "./state.js";
 import { h } from "./dom.js";
-import { attachRail, colourSheet, folderSheet, slider } from "./ui.js";
+import { actionSheet, attachRail, colourSheet, folderSheet, slider } from "./ui.js";
 import { hexToRgb, toHex } from "./colour.js";
 
 const root = document.getElementById("app");
@@ -24,14 +26,16 @@ let cropper = null;
 let aspectKey = "free";
 let solveView = "sim";
 let solveTimer = 0;
-let exportOpts = { detail: "standard", formats: { "3mf": true, stl: false } };
+let exportOpts = { detail: "fine", formats: { "3mf": true, stl: false } };   // fine: barely bigger files, more detail
 const BED_MM = bambu3mf.BUILD_VOLUME_MM;   // the Bambu Lab A1 plate: 256 x 256 x 256 mm
+// the most a print can be and still fit with its 5 mm brim, 3 mm from each edge
+const PRINT_MAX_MM = BED_MM - 2 * (5 + 3);
 let lastFiles = [];           // [{ name, url }] from the last export
 let prepView = "crop";        // crop | result
 let preSuggest = null;        // adjustments before the last "suggest", for undo
 let lassoTool = "cut";        // cut | back | only
 let solveShaded = false;      // relief lighting on the top-down print (off = flat, exact colours)
-let exportView = "top";       // top | angle, when the preview pane is too small for both
+let exportView = "top";       // top | angle | back, when the preview pane is too small for all
 let rail = null;              // scroll rail on the controls pane
 let currentSheet = null;      // open colour sheet, if any
 let enter = "rise";             // how the next render comes in: fwd | back | rise (reset after use)
@@ -191,11 +195,16 @@ async function sourceHasAlpha(bmp) {
   return shape.hasAlpha(ctx.getImageData(0, 0, c.width, c.height).data);
 }
 
-const picker = h("input", { type: "file", accept: "image/*", hidden: true,
-  onchange: async (e) => {
+/** Start a new project from a picked photo (gallery, camera or files). */
+async function startFromFile(e) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
+    if (/\.zip$/i.test(file.name) || /zip/.test(file.type)) {
+      await importProjectZip(file);
+      menuGo("projects");
+      return;
+    }
     try {
       const bmp = await loadPhoto(file);
       app.sourceBitmap?.close?.();
@@ -219,8 +228,22 @@ const picker = h("input", { type: "file", accept: "image/*", hidden: true,
       console.error(err);
       toast("Couldn't open that photo");
     }
-  } });
-document.body.append(picker);
+}
+// Three ways in. "image/*" opens the phone's photo gallery (Android's photo
+// picker, iOS's library); capture opens the camera; no accept at all opens the
+// file browser (Android only uses the photo picker when every accepted type
+// is an image, so this is how to reach Files / Downloads / Drive).
+const picker = h("input", { type: "file", accept: "image/*", hidden: true, onchange: startFromFile });
+const cameraPicker = h("input", { type: "file", accept: "image/*", capture: "environment", hidden: true, onchange: startFromFile });
+const filePicker = h("input", { type: "file", hidden: true, onchange: startFromFile });
+document.body.append(picker, cameraPicker, filePicker);
+
+/** New project: the "new" page, with the gallery opened straight away (still
+ *  inside the tap, which a browser requires before it opens a picker). */
+function newProject() {
+  menuGo("new");
+  picker.click();
+}
 
 // ---------------------------------------------------------------- saving
 let persistTimer = 0;
@@ -230,15 +253,23 @@ function persistSoon() {
 }
 
 /** Save project.json now (and a fresh thumbnail, if given). */
+let lastSaved = null;              // { at: Date, ok: bool } for the "saved" line on Export
+const saveWatchers = new Set();
 async function persistNow(thumb = undefined) {
   clearTimeout(persistTimer);
-  if (!app.project) return;
+  if (!app.project) return false;
   app.project.modified = new Date().toISOString().slice(0, 19);
   try {
     await store.saveProject(app.project, thumb);
+    lastSaved = { at: new Date(), ok: true };
+    return true;
   } catch (err) {
     console.error(err);
+    lastSaved = { at: new Date(), ok: false };
     toast("couldn't save - is the phone's storage full?", 3000);
+    return false;
+  } finally {
+    saveWatchers.forEach((f) => f());
   }
 }
 
@@ -561,17 +592,17 @@ function renderPrep(screen, action) {
   /** The widest print of this crop that still fits the A1 plate (256 mm each way). */
   const fitToBed = (mm) => {
     const [, , w, hgt] = p.crop || cropper?.getCrop() || [0, 0, 1, 1];
-    return Math.max(20, Math.min(mm, Math.floor(BED_MM / Math.max(1, hgt / w))));
+    return Math.max(20, Math.min(mm, Math.floor(PRINT_MAX_MM / Math.max(1, hgt / w))));
   };
   const updateReadout = (crop) => {
     const [, , w, hgt] = crop;
     const k = Math.min(1, MOBILE_OUTPUT_PX / Math.max(w, hgt));
     const mmH = p.physical_width_mm * (hgt / w);
-    const over = p.physical_width_mm > BED_MM + 0.5 || mmH > BED_MM + 0.5;
+    const over = p.physical_width_mm > PRINT_MAX_MM + 0.5 || mmH > PRINT_MAX_MM + 0.5;
     readout.replaceChildren(kv([
       ["crop", `${w} × ${hgt} px`],
       ["solve", `${Math.round(w * k)} × ${Math.round(hgt * k)} px`],
-      ["print", `${p.physical_width_mm.toFixed(0)} × ${mmH.toFixed(0)} mm${over ? "  ⚠ bigger than the 256 mm A1 plate" : ""}`],
+      ["print", `${p.physical_width_mm.toFixed(0)} × ${mmH.toFixed(0)} mm${over ? `  ⚠ over ${PRINT_MAX_MM} mm: won't fit the A1 plate with its brim` : ""}`],
     ]));
   };
 
@@ -690,8 +721,8 @@ function renderPrep(screen, action) {
 
   // ---- painting: presets, suggest, image sliders, tools
   p.adjustments = { ...imaging.DEFAULT_ADJUSTMENTS, ...(p.adjustments || {}) };
-  const paintNote = h("p", { class: "meta" },
-    "the closer the source looks to a flat painting, the cleaner the 3D solve. try a preset or let it suggest.");
+  const paintNote = h("p", { class: "meta hint" },
+    "decimate flattens the photo to this many colours: the fewer, the cleaner the print. suggest picks a starting point.");
   const setAdjustments = (adj, note) => {
     p.adjustments = { ...imaging.DEFAULT_ADJUSTMENTS, ...adj };
     const [freshKey, freshFine] = [buildKeySliders(), buildFineSliders()];
@@ -716,8 +747,9 @@ function renderPrep(screen, action) {
   };
   const presets = h("div", { class: "chips" },
     Object.keys(imaging.PRESETS).map((k) => h("button", { class: "chip", onclick: () =>
-      setAdjustments(imaging.PRESETS[k], `preset: ${k} - ${PRESET_NOTES[k]}`) }, k)),
-    h("button", { class: "chip accent", onclick: () => {
+      setAdjustments(imaging.PRESETS[k], `preset: ${k} - ${PRESET_NOTES[k]}`) }, k)));
+  const suggestRow = h("div", { class: "suggest-row" },
+    h("button", { class: "btn accent-btn", type: "button", onclick: () => {
       if (!cropper) return;
       preSuggest = { ...p.adjustments };
       undoBtn.disabled = false;
@@ -732,22 +764,27 @@ function renderPrep(screen, action) {
   const adjSlider = (label, key, min, max, fmt, { scale = 100, key: big = false } = {}) =>
     rangeField(label, Math.round(p.adjustments[key] * scale), { min, max, fmt, key: big,
       oninput: (v) => { p.adjustments[key] = v / scale; adjusted(); } });
-  // the two that matter most sit first, and a little bigger
-  const buildKeySliders = () => h("div", {},
+  // decimate is the one that matters: first, biggest; sharpen rides along
+  const buildKeySliders = () => h("div", { class: "decimate-box" },
     rangeField("decimate", p.adjustments.decimate || 1, { min: 1, max: 32, key: true,
       fmt: (v) => (v >= 2 ? `${v} colours` : "off"),
       oninput: (v) => { p.adjustments.decimate = v >= 2 ? v : 0; adjusted(); } }),
-    adjSlider("saturation", "saturation", -100, 100, pct, { key: true }));
+    adjSlider("sharpen", "sharpen", 0, 100, (v) => (v ? `${v}%` : "off")));
+  // the rest live in "more adjustments", closed: suggest still sets them
   const buildFineSliders = () => h("div", {},
+    adjSlider("saturation", "saturation", -100, 100, pct),
     adjSlider("brightness", "brightness", -60, 60, pct),
     adjSlider("contrast", "contrast", -60, 60, pct),
     adjSlider("denoise", "denoise", 0, 100, (v) => (v ? `${v}%` : "off")),
-    adjSlider("sharpen", "sharpen", 0, 100, (v) => (v ? `${v}%` : "off")),
     adjSlider("pixelize", "pixelize", 0, 100, (v) => (v ? `${Math.round(1 + v / 100 * 23)} px blocks` : "off")),
+    h("div", { class: "gap-top" }, presets),
     h("button", { class: "btn wide", style: "margin-top:8px",
       onclick: () => setAdjustments(imaging.DEFAULT_ADJUSTMENTS, "adjustments reset") }, "reset adjustments"));
   let keySliders = buildKeySliders();
   let fineSliders = buildFineSliders();
+  const moreBox = h("details", { class: "more-box" },
+    h("summary", {}, "saturation, brightness, contrast, denoise, pixelize, presets"),
+    fineSliders);
 
   // ---- lasso: draw a loop around what you don't want; each loop chips more away
   let lassoOn = false;
@@ -822,12 +859,9 @@ function renderPrep(screen, action) {
       : pane("view", h("div", { class: "view-bar" }, viewChips, bigButton()),
           frame(null, cropHost, resultHost), lassoBar),
     pane("ctrl",
-      head("colour & detail"),
       keySliders,
-      presets,
+      suggestRow,
       paintNote,
-      head("fine tune"),
-      fineSliders,
 
       head("crop"),
       h("div", { class: "row" },
@@ -842,27 +876,27 @@ function renderPrep(screen, action) {
         h("button", { class: "btn grow", onclick: () => cropper?.reset() }, "reset")),
       h("div", { class: "gap-top" }, aspectRow),
       readout,
+      widthField = numField("print width (mm)", p.physical_width_mm, { step: "1", min: 20, max: PRINT_MAX_MM,
+        onchange: (v) => { v = fitToBed(v); widthField.querySelector("input").value = String(v); p.physical_width_mm = v; updateReadout(p.crop); invalidate(); cropper?.refreshOverlay(); } }),
 
       head("shape"),
       shapeChips,
       h("div", { class: "gap-top" }, tolerance),
       shapeNote,
-      !app.sourceHasAlpha && h("p", { class: "meta" },
+      !app.sourceHasAlpha && h("p", { class: "meta hint" },
         "tip: a PNG with a transparent background prints as exactly that outline."),
 
       head("lasso cut"),
       lassoBtn,
       lassoNote,
 
-      head("print size"),
-      widthField = numField("width (mm)", p.physical_width_mm, { step: "1", min: 20, max: BED_MM,
-        onchange: (v) => { v = fitToBed(v); widthField.querySelector("input").value = String(v); p.physical_width_mm = v; updateReadout(p.crop); invalidate(); cropper?.refreshOverlay(); } }),
-      h("p", { class: "meta" }, "the A1 plate is 256 × 256 mm, and 256 mm tall")),
+      head("more adjustments"),
+      moreBox),
   );
 
   action.append(
     h("button", { class: "btn ghost", onclick: () => picker.click() }, "new photo"),
-    h("button", { class: "btn primary", onclick: commitPrep }, "prep  &  continue  →"),
+    h("button", { class: "btn primary", onclick: commitPrep }, "next: solve  →"),
   );
 }
 
@@ -900,7 +934,7 @@ let sideQueue = Promise.resolve();   // one GL context at a time
 
 /** Route the home screen to whichever menu page is open. */
 function renderHome(screen) {
-  ({ main: menuMain, projects: menuProjects, settings: menuSettings, help: menuHelp, about: menuAbout }[menuPage]
+  ({ main: menuMain, new: menuNew, projects: menuProjects, settings: menuSettings, help: menuHelp, about: menuAbout }[menuPage]
     || menuMain)(screen);
 }
 
@@ -912,7 +946,7 @@ function menuProjects(screen) {
 
   const viewChips = chipGroup([{ key: "list", label: "list" }, { key: "album", label: "album" }],
     album ? "album" : "list", (k) => { setPref("view", k); render(); });
-  const newBtn = h("button", { class: "btn wide", type: "button", onclick: () => picker.click() }, "+ new from a photo");
+  const newBtn = h("button", { class: "btn wide", type: "button", onclick: newProject }, "+ new project");
 
   screen.append(pane("ctrl",
     h("div", { class: "home-bar" }, head("saved prints"), viewChips),
@@ -929,11 +963,18 @@ function menuProjects(screen) {
       holder.replaceChildren(h("p", { class: "meta" }, "nothing saved yet - projects you start are kept on this phone."));
       return;
     }
-    const folders = [...new Set(recs.map((r) => r.data.group).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    const folders = allFolders(recs.map((r) => r.data.group).filter(Boolean));
     const reload = () => load();
 
     const move = (rec) => folderSheet({ title: rec.data.name, folders, current: rec.data.group,
       onPick: async (g) => { await store.setGroup(rec.id, g); reload(); } });
+    // a whole folder, with everything in it, into another folder (or to the top)
+    const moveFolder = (path) => folderSheet({ title: `move "${folderLeaf(path)}"`, folders, exclude: path,
+      current: folderParent(path), noneLabel: "top level",
+      onPick: async (into) => {
+        const to = joinFolder(into, folderLeaf(path));
+        if (to !== path) { await store.renameGroup(path, to); reload(); }
+      } });
     const remove = async (rec) => {
       if (!confirm(`Delete "${rec.data.name}" from this phone? This can't be undone.`)) return;
       await store.deleteProject(rec.id);
@@ -987,30 +1028,66 @@ function menuProjects(screen) {
           h("button", { type: "button", onclick: () => remove(rec) }, "delete")));
     };
 
-    const groupHead = (g, n) => h("div", { class: "group-head" },
+    // the folder tree: path -> { kids: [paths], items: [projects] }
+    const tree = new Map([["", { kids: [], items: [] }]]);
+    for (const f of folders) tree.set(f, { kids: [], items: [] });
+    for (const f of folders) tree.get(folderParent(f)).kids.push(f);
+    for (const r of recs) tree.get(r.data.group || "").items.push(r);
+    const total = (p) => tree.get(p).items.length + tree.get(p).kids.reduce((s, k) => s + total(k), 0);
+
+    // "g" is the full path; the head shows the folder's own name, indented by depth
+    const groupHead = (g, n, depth = 0) => h("div", { class: "group-head", style: `--depth:${depth}` },
       h("button", { class: "group-toggle", type: "button", onclick: () => {
         if (collapsed.has(g)) collapsed.delete(g); else collapsed.add(g);
         keepCollapsed();
         reload();
-      } }, `${collapsed.has(g) ? "▸" : "▾"}  ${g || "no folder"}  (${n})`),
-      g ? h("button", { class: "chip", type: "button", onclick: async () => {
-        const next = prompt("Folder name", g);
-        if (next === null) return;
-        await store.renameGroup(g, next.trim().slice(0, 60));
-        reload();
-      } }, "rename") : null,
-      g ? h("button", { class: "chip", type: "button", onclick: async () => {
-        if (!confirm(`Take everything out of "${g}"? The projects stay; only the folder goes.`)) return;
-        await store.renameGroup(g, "");
-        reload();
-      } }, "ungroup") : null);
+      } }, `${collapsed.has(g) ? "▸" : "▾"}  ${g ? folderLeaf(g) : "no folder"}  (${n})`),
+      // one button, so a nested folder's name keeps the width on a phone
+      g ? h("button", { class: "chip group-more", type: "button", "aria-label": `${folderLeaf(g)} options`,
+        onclick: () => folderActions(g) }, "⋯") : null);
+
+    const folderActions = (g) => {
+      const up = folderParent(g);
+      actionSheet({ title: g.replaceAll("/", " › "), actions: [
+        ["move", "into another folder, or to the top", () => moveFolder(g)],
+        ["rename", null, async () => {
+          const next = prompt("Folder name", folderLeaf(g));
+          if (next === null || !folderName(next)) return;
+          await store.renameGroup(g, joinFolder(up, folderName(next)));
+          reload();
+        }],
+        ["ungroup", `its prints and folders move up into ${up ? folderLeaf(up) : "the top level"}`, async () => {
+          if (!confirm(`Take everything out of "${folderLeaf(g)}"? Only the folder goes.`)) return;
+          await store.renameGroup(g, up);
+          reload();
+        }],
+      ] });
+    };
+
+    const list = (items) => h("div", { class: album ? "album-grid" : "projects" }, items.map(album ? card : row));
+    /** One folder's contents: its sub-folders (each a head plus, when open, its own contents), then its prints. */
+    const contents = (p, depth) => {
+      const out = [];
+      for (const k of tree.get(p).kids) {
+        out.push(groupHead(k, total(k), depth));
+        if (!collapsed.has(k)) {
+          const inner = contents(k, depth + 1);
+          if (inner.length) out.push(h("div", { class: "folder-body" }, inner));
+        }
+      }
+      if (p && tree.get(p).items.length) out.push(list(tree.get(p).items));
+      return out;
+    };
 
     const nodes = [];
-    for (const g of [...folders, ""]) {
-      const items = recs.filter((r) => r.data.group === g);
-      if (!items.length) continue;
-      if (folders.length) nodes.push(groupHead(g, items.length));      // no folders yet: a flat list
-      if (!collapsed.has(g)) nodes.push(h("div", { class: album ? "album-grid" : "projects" }, items.map(album ? card : row)));
+    if (!folders.length) nodes.push(list(recs));                      // no folders yet: a flat list
+    else {
+      nodes.push(...contents("", 0));
+      const loose = tree.get("").items;
+      if (loose.length) {
+        nodes.push(groupHead("", loose.length));
+        if (!collapsed.has("")) nodes.push(list(loose));
+      }
     }
     holder.replaceChildren(...nodes);
   }).catch((err) => {
@@ -1021,10 +1098,11 @@ function menuProjects(screen) {
 }
 
 // ---------------------------------------------------------------- main menu
-let menuPage = "main";    // main | projects | settings | help | about
+let menuPage = "main";    // main | new | projects | settings | help | about
 
 const MENU_HEAD = {
   main: ["Main menu", "photo → layered print"],
+  new: ["New project", "pick a photo to start from"],
   projects: ["Projects", "your saved prints"],
   settings: ["Settings", "sound, motion and gestures"],
   help: ["Help", "how HueLite works"],
@@ -1037,32 +1115,45 @@ function menuGo(page) {
   render();
 }
 
+// small line icons, fixed strings (never user data)
+const ICONS = {
+  plus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+  play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5l11 7-11 7z"/></svg>',
+  folder: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5h6.5l2 2.5H21v10H3z"/></svg>',
+  camera: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3.5l1.5-2.5h6L16.5 8H20v11H4z"/><circle cx="12" cy="13.5" r="3.5"/></svg>',
+  file: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg>',
+  image: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v14H3z"/><path d="M3 16l5-5 4 4 3-3 6 6"/><circle cx="15.5" cy="9" r="1.5"/></svg>',
+};
+const icon = (name) => { const s = h("span", { class: "ico" }); s.innerHTML = ICONS[name]; return s; };
+
 const menuItem = (n, title, hint, onclick, cls = "") =>
   h("button", { class: `menu-item ${cls}`, type: "button", onclick },
-    h("span", { class: "mi-n" }, n),
+    h("span", { class: "mi-n" }, typeof n === "string" ? n : n),
     h("span", { class: "mi-t" }, h("b", {}, title), h("span", { class: "meta" }, hint)),
     h("span", { class: "mi-go" }, "›"));
+/** The smaller menu entries, as tiles in a grid under the big three. */
+const menuTile = (title, onclick) => h("button", { class: "menu-tile", type: "button", onclick }, title);
 
 function menuMain(screen) {
   let latest = null;
-  const cont = menuItem("▶", "Continue", "", () => latest && openProject(latest.id), "menu-continue lead");
+  const cont = menuItem(icon("play"), "Continue", "", () => latest && openProject(latest.id), "menu-continue lead");
   cont.hidden = true;
-  const projects = menuItem("02", "Projects", "your saved prints, folders and album", () => menuGo("projects"));
+  const projects = menuItem(icon("folder"), "Projects", "saved prints and folders", () => menuGo("projects"), "lead");
   const list = h("div", { class: "menu-list" },
+    menuItem(icon("plus"), "New project", "start from a photo", newProject, "lead first"),
     cont,
-    menuItem("01", "New project", "start from a photo", () => picker.click()),
     projects,
-    menuItem("03", "Import a project", "open a .zip from the Mac", () => zipPicker.click()),
-    menuItem("04", "Settings", "sound, motion, gestures", () => menuGo("settings")),
-    menuItem("05", "Help", "how it works, gestures, tips", () => menuGo("help")),
-    menuItem("06", "About", "version and privacy", () => menuGo("about")));
-  list.querySelectorAll(".menu-item").forEach((el, i) => el.style.setProperty("--i", String(i)));
+    h("div", { class: "menu-tiles" },
+      menuTile("Import .zip", () => zipPicker.click()),
+      menuTile("Settings", () => menuGo("settings")),
+      menuTile("Help", () => menuGo("help")),
+      menuTile("About", () => menuGo("about"))));
+  list.querySelectorAll(".menu-item, .menu-tiles").forEach((el, i) => el.style.setProperty("--i", String(i)));
 
   screen.append(
     pane("view", frame(null, h("div", { class: "hero" },
       h("div", { class: "hero-mark" }, h("i"), h("i"), h("i"), h("i"), h("i")),
       h("div", { class: "hero-word" }, "HUELITE"),
-      h("div", { class: "hero-tag" }, "photo → layered print"),
       h("div", { class: "hero-sub" }, "multi-colour relief prints for the Bambu Lab A1")))),
     pane("ctrl", list, h("p", { class: "stamp" }, `build ${__BUILD__}`)));
 
@@ -1074,8 +1165,20 @@ function menuMain(screen) {
     const next = STAGES.find((st) => d.status[st] !== COMPLETE);
     cont.querySelector(".meta").textContent = `${d.name} · ${next ? `next: ${STAGE_LABELS[next].toLowerCase()}` : "complete"}`;
     cont.hidden = false;
-    projects.querySelector(".meta").textContent = `${raw.length} saved · folders and album`;
+    projects.querySelector(".meta").textContent = `${raw.length} saved · prints and folders`;
   }).catch((err) => console.error(err));
+}
+
+function menuNew(screen) {
+  screen.append(pane("ctrl",
+    h("div", { class: "new-bar" }, head("new project"),
+      h("div", { class: "new-alt" },
+        h("button", { class: "chip new-src", type: "button", onclick: () => cameraPicker.click() }, icon("camera"), "camera"),
+        h("button", { class: "chip new-src", type: "button", onclick: () => filePicker.click() }, icon("file"), "files"))),
+    h("button", { class: "new-drop", type: "button", onclick: () => picker.click() },
+      icon("image"), h("b", {}, "choose a photo"), h("span", { class: "meta" }, "from your gallery")),
+    h("p", { class: "meta hint" }, "the gallery opens on its own. camera takes a new photo; files browses Downloads, Drive and other folders. " +
+      "a PNG with a transparent background prints as exactly that outline.")));
 }
 
 function menuSettings(screen) {
@@ -1097,6 +1200,11 @@ function menuSettings(screen) {
     h("p", { class: "meta" }, "sounds are for moving between stages, a quiet tick on buttons, and finishing jobs. " +
       "the main menu, sliders and scroll bar are always silent. the ♪ button in the corner mutes everything."),
 
+    head("explanations"),
+    chipGroup([{ key: "off", label: "hide" }, { key: "on", label: "show" }], on("hints", "off"),
+      (k) => { setPref("hints", k); applyHints(); }),
+    h("p", { class: "meta" }, "the how-it-works notes under the controls on Prep, Solve and New project."),
+
     head("motion"),
     chipGroup([{ key: "full", label: "full" }, { key: "calm", label: "calm" }], on("motion", "full"),
       (k) => { setPref("motion", k); applyMotion(); }),
@@ -1114,7 +1222,7 @@ function menuSettings(screen) {
     head("reset"),
     h("button", { class: "btn wide", type: "button", onclick: () => {
       if (!confirm("Reset sound, motion, gesture and view settings? Your projects are not touched.")) return;
-      for (const k of ["sfx", "vol", "motion", "swipe", "view", "collapsed"]) { try { localStorage.removeItem(`huelite.${k}`); } catch { /* private window */ } }
+      for (const k of ["sfx", "vol", "motion", "swipe", "view", "collapsed", "hints"]) { try { localStorage.removeItem(`huelite.${k}`); } catch { /* private window */ } }
       applyMotion();
       location.reload();
     } }, "reset settings")));
@@ -1442,31 +1550,32 @@ function renderSolve(screen, action) {
   };
   /** colours that were picked by the fit follow the stack when it changes */
   const refit = () => { if (s.colours_auto) { fitColours(); refitTable(); } };
+  /** The slots as a 2 x 2 grid of small cards: swatch, TD and layers each. */
   const filTable = () => {
     strips = [];
-    const table = h("div", { class: "fil-table" },
-      h("span"), h("span", { class: "th" }, "colour"), h("span", { class: "th" }, "TD mm"),
-      h("span", { class: "th" }, "layers"),
-      s.filaments.flatMap((f, i) => {
+    return h("div", { class: "fil-grid" },
+      s.filaments.map((f, i) => {
         const strip = h("i", { class: "pr", hidden: true });
         strips.push(strip);
-        return [
-          h("span", { class: "idx" }, String(f.slot)),
-          h("button", { class: "sw", type: "button", style: `background:${f.hex}`,
-            "aria-label": `slot ${f.slot} colour ${f.hex}`, onclick: (e) => openColour(f, i, e.currentTarget) }, strip),
-          h("input", { class: "val", type: "number", inputmode: "decimal", step: "0.05", min: "0.05", max: "6",
-            value: Number(f.td_mm).toFixed(2), onchange: (e) => {
-              const v = Math.min(6, Math.max(0.05, parseFloat(e.target.value) || f.td_mm));
-              f.td_mm = v; e.target.value = v.toFixed(2); refit(); queue();
-            } }),
-          h("input", { class: "val", type: "number", inputmode: "numeric", step: "1", min: "0", max: "120",
-            value: String(f.band_layers), onchange: (e) => {
-              const v = Math.min(120, Math.max(0, parseInt(e.target.value, 10) || 0));
-              f.band_layers = v; e.target.value = String(v); refit(); queue();
-            } }),
-        ];
+        const edge = i === 0 ? "lowest" : i === s.filaments.length - 1 ? "top" : "";
+        return h("div", { class: "fil-card" },
+          h("div", { class: "fil-card-head" },
+            h("button", { class: "sw", type: "button", style: `background:${f.hex}`,
+              "aria-label": `slot ${f.slot} colour ${f.hex}`, onclick: (e) => openColour(f, i, e.currentTarget) }, strip),
+            h("span", { class: "fil-card-name" }, h("b", {}, `slot ${f.slot}`), h("span", { class: "meta" }, edge || f.hex))),
+          h("label", { class: "fil-field" }, "TD mm",
+            h("input", { class: "val", type: "number", inputmode: "decimal", step: "0.05", min: "0.05", max: "6",
+              value: Number(f.td_mm).toFixed(2), onchange: (e) => {
+                const v = Math.min(6, Math.max(0.05, parseFloat(e.target.value) || f.td_mm));
+                f.td_mm = v; e.target.value = v.toFixed(2); refit(); queue();
+              } })),
+          h("label", { class: "fil-field" }, "layers",
+            h("input", { class: "val", type: "number", inputmode: "numeric", step: "1", min: "0", max: "120",
+              value: String(f.band_layers), onchange: (e) => {
+                const v = Math.min(120, Math.max(0, parseInt(e.target.value, 10) || 0));
+                f.band_layers = v; e.target.value = String(v); refit(); queue();
+              } })));
       }));
-    return table;
   };
   let filEl = filTable();
   const refitTable = () => { const fresh = filTable(); filEl.replaceWith(fresh); filEl = fresh; };
@@ -1486,45 +1595,50 @@ function renderSolve(screen, action) {
       frame(null, view),
       h("div", { class: "below-view" }, summary, readoutBeside ? readout : null)),
     pane("ctrl",
-      readoutBeside ? null : [head("summary"), readout],
+      head("foundations"),
+      rangeField("foundations", Math.min(25, Math.round((s.slope_mm_per_layer ?? 0) * 100)), { min: 0, max: 25, key: true,
+        fmt: (v) => (v ? `${(v / 100).toFixed(2)} mm run / layer` : "off"),
+        oninput: (v) => { s.slope_mm_per_layer = v / 100; queue(); } }),
+      (s.slope_mm_per_layer ?? 0) > 0.25 && h("p", { class: "meta" },
+        `this project is at ${s.slope_mm_per_layer.toFixed(2)}, past the slider's 0.25 end; moving it sets a new value.`),
+
       head("filaments"),
-      h("p", { class: "meta" }, "slot 1 prints lowest · tap a swatch to choose its colour"),
+      h("p", { class: "meta hint" }, "slot 1 prints lowest · tap a swatch to choose its colour"),
       filEl,
       h("button", { class: "btn wide gap-top", onclick: () => {
         fitColours(); refitTable(); queue();
       } }, "fit colours to photo"),
-      h("p", { class: "meta" }, "picks the filament colours that make the printed stack look most like your prepped photo. " +
+      h("p", { class: "meta hint" }, "picks the filament colours that make the printed stack look most like your prepped photo. " +
         "the strip under a swatch is what that band really prints as."),
+
+      head("colour"),
+      chipGroup([{ key: "blend", label: "translucent blend" }, { key: "solid", label: "solid bands" }],
+        s.band_mode || "blend", (k) => { s.band_mode = k; refit(); queue(); }),
+      h("div", { class: "gap-top" },
+        chipGroup([{ key: "bayer8", label: "dither on" }, { key: "none", label: "dither off" }],
+          s.dither === "none" ? "none" : "bayer8", (k) => { s.dither = k; queue(); })),
+      rangeField("dither amount", Math.round((s.dither_amount ?? 1) * 100), { min: 0, max: 200,
+        fmt: (v) => `${v}%`, oninput: (v) => { s.dither_amount = v / 100; queue(); } }),
+
+      head("border"),
+      chipGroup([{ key: "raised", label: "raised rim" }, { key: "flush", label: "flush" }, { key: "none", label: "none" }],
+        s.border.mode || "raised", (k) => { s.border.mode = k; s.border.enabled = k !== "none"; queue(); }),
+      app.prepped.mask && h("p", { class: "meta hint" }, "the rim follows the outline"),
+      borderWidth, frameSlot,
+
+      readoutBeside ? null : [head("summary"), readout],
 
       head("layers"),
       numField("layer height (mm)", s.layer_height_mm, { step: "0.02", min: 0.04, max: 0.3, fmt: (v) => v.toFixed(2),
         onchange: (v) => { s.layer_height_mm = v; queue(); } }),
       numField("base depth (mm)", +(s.base_layers * s.layer_height_mm).toFixed(2), { step: "0.2", min: 0.4, max: 8,
         fmt: (v) => v.toFixed(2),
-        onchange: (v) => { s.base_layers = Math.max(2, solve.layersForMm(v, s.layer_height_mm)); queue(); } }),
-
-      head("colour"),
-      chipGroup([{ key: "solid", label: "solid bands" }, { key: "blend", label: "translucent blend" }],
-        s.band_mode || "solid", (k) => { s.band_mode = k; refit(); queue(); }),
-      h("div", { class: "gap-top" },
-        chipGroup([{ key: "bayer8", label: "dither on" }, { key: "none", label: "dither off" }],
-          s.dither === "none" ? "none" : "bayer8", (k) => { s.dither = k; queue(); })),
-      rangeField("dither amount", Math.round((s.dither_amount ?? 1) * 100), { min: 0, max: 200,
-        fmt: (v) => `${v}%`, oninput: (v) => { s.dither_amount = v / 100; queue(); } }),
-      rangeField("foundations", Math.round((s.slope_mm_per_layer ?? 0) * 100), { min: 0, max: 100,
-        fmt: (v) => (v ? `${(v / 100).toFixed(2)} mm run / layer` : "off"),
-        oninput: (v) => { s.slope_mm_per_layer = v / 100; queue(); } }),
-
-      head("border"),
-      chipGroup([{ key: "raised", label: "raised rim" }, { key: "flush", label: "flush" }, { key: "none", label: "none" }],
-        s.border.mode || "raised", (k) => { s.border.mode = k; s.border.enabled = k !== "none"; queue(); }),
-      app.prepped.mask && h("p", { class: "meta" }, "the rim follows the outline"),
-      borderWidth, frameSlot),
+        onchange: (v) => { s.base_layers = Math.max(2, solve.layersForMm(v, s.layer_height_mm)); queue(); } })),
   );
 
   action.append(
     h("button", { class: "btn ghost", onclick: () => go("prep") }, "back to prep"),
-    h("button", { class: "btn primary", onclick: commitSolve }, "solve  &  continue  →"),
+    h("button", { class: "btn primary", onclick: commitSolve }, "next: export  →"),
   );
   requestAnimationFrame(recompute);
 }
@@ -1581,6 +1695,35 @@ function modelArgs() {
            filaments: s.filaments, detail: exportOpts.detail, name: app.project.name };
 }
 
+/** The maker's details on the back art; kept per phone, not per project. */
+const backTexts = () => ({
+  title: app.project.name,
+  maker: pref("back.maker", backart.BACK_DEFAULTS.maker),
+  email: pref("back.email", backart.BACK_DEFAULTS.email),
+  brand: pref("back.brand", backart.BACK_DEFAULTS.brand),
+});
+
+/** Which filament the back art uses and how deep it goes. Slot 0 means
+ *  "pick for me": the filament that stands out most against slot 1, which
+ *  is what the rest of the plate side is. It never eats the whole base:
+ *  at least one layer of the base stays above it. */
+function backPlan(back) {
+  const { s, lh, baseLayers } = solveSettings();
+  const fil = s.filaments;
+  const baseRgb = hexToRgb(fil[0].hex);
+  const dist = (f) => { const c = hexToRgb(f.hex); return Math.hypot(...c.map((v, i) => (v - baseRgb[i]) * [0.3, 0.59, 0.11][i] * 3)); };
+  let pickSlot = fil.slice(1).reduce((best, f) => (!best || dist(f) > dist(best) ? f : best), null)?.slot ?? fil[0].slot;
+  const chosen = fil.find((f) => f.slot === back.slot);
+  const slot = chosen ? chosen.slot : pickSlot;
+  const baseMm = mesh.snappedBaseMm(baseLayers, lh);
+  let layers = back.layers;
+  while (layers > 1 && backart.backDepthMm(layers, lh) > baseMm - lh + 1e-6) layers--;
+  const depthMm = backart.backDepthMm(layers, lh);
+  return { slot, auto: !chosen, layers, depthMm, baseMm, reduced: layers < back.layers,
+           hex: fil.find((f) => f.slot === slot).hex, usable: slot !== fil[0].slot,
+           thin: depthMm > baseMm - lh + 1e-6 };
+}
+
 function renderExport(screen, action) {
   if (!app.solved) {
     screen.append(h("div", { class: "todo" }, h("b", {}, "nothing solved"),
@@ -1597,7 +1740,7 @@ function renderExport(screen, action) {
     baseMm: baseLayers * lh, cellMm: mm / w, shaded: false }));
   top.className = "preview-out";
   let oblique;
-  const gl3 = createView3D();
+  const gl3 = createView3D({ fullscreen: true });   // full screen only here, at the end
   if (gl3) {
     disposers.push(() => gl3.destroy());
     gl3.set({ heights, w, h: hh, mask, lut, layerH: lh, baseMm: baseLayers * lh, physicalW: mm, maxCols: 800 });
@@ -1608,24 +1751,75 @@ function renderExport(screen, action) {
     oblique.className = "preview-out";
   }
 
-  const stats = h("p", { class: "meta" }, "building mesh…");
+  const stats = h("p", { class: "meta" }, "…");
+  const warn = h("div", { class: "warn-box", hidden: true });
+  ex.back ??= { enabled: true, slot: 0, layers: 2, pattern: "topo" };
+  const back = ex.back;
 
+  // problems that ruin a print or a phone: shown big, under the preview
   const restat = () => {
     const model = mesh.buildModel(modelArgs());
-    const mode = app.project.prep.shape?.mode || "rect";
-    stats.textContent = `${model.stats.parts} parts · ${model.stats.triangles.toLocaleString()} triangles · ` +
-      `A1 plate · outline ${mask ? shape.MODE_LABELS[mode] : "rectangle"}`;
+    const { widthMm, heightMm } = mesh.modelGrid(modelArgs());
+    const warns = [];
+    if (Math.max(widthMm, heightMm) > PRINT_MAX_MM + 0.5) {
+      warns.push(`${widthMm.toFixed(0)} × ${heightMm.toFixed(0)} mm won't fit the A1 plate with its brim. Go back to Prep and make it ${PRINT_MAX_MM} mm or less.`);
+    } else if (model.parts.length > 1 && !bambu3mf.placement(model).towerFits) {
+      warns.push("No room on the plate for the prime tower: Studio will put it on top of the print. Make it a little smaller in Prep, or drag the tower to a free spot in Studio before printing.");
+    }
+    const stlMb = (model.stats.triangles * 50) / 1e6;
+    if (exportOpts.formats.stl && stlMb > 60) {
+      warns.push(`The STL will be about ${stlMb.toFixed(0)} MB, enough to crash a phone. Pick standard or draft detail, or export the 3MF only.`);
+    }
+    warn.replaceChildren(...warns.map((t) => h("p", {}, `⚠ ${t}`)));
+    warn.hidden = !warns.length;
+  };
+
+  // the back, as seen after turning the print over (a quick, coarse render)
+  const backCanvas = h("canvas", { class: "preview-out" });
+  const backNote = h("p", { class: "meta" });
+  let backTimer = 0, backSeq = 0;
+  const redrawBack = (delay = 150) => {
+    clearTimeout(backTimer);
+    backTimer = setTimeout(async () => {
+      const seq = ++backSeq;
+      const plan = backPlan(back);
+      const grid = mesh.modelGrid(modelArgs());
+      // fine enough to read the email when you zoom in (about 0.12 mm a pixel), still well under 0.1 s
+      const art = await backart.renderBack(grid, { ...backTexts(), pattern: back.pattern, seed: back.seed, maxPixels: 1_000_000, minPx: 0.12 });
+      if (seq !== backSeq || !backCanvas.isConnected) return;
+      const shown = back.enabled && plan.usable ? art : { ...art, field: new Float32Array(art.field.length) };
+      const img = backart.backPreview(shown, s.filaments[0].hex, plan.hex);
+      backCanvas.width = img.width; backCanvas.height = img.height;
+      backCanvas.getContext("2d").putImageData(img, 0, 0);
+      // the 3D view's underside: tap "⇅ back" there to turn the print over
+      gl3?.setBack({ image: backart.backPreview(shown, s.filaments[0].hex, plan.hex, null),
+                     widthMm: art.widthMm, heightMm: art.heightMm });
+      const notes = [];
+      if (!back.enabled) notes.push("back art is off: the plate side prints plain.");
+      else if (!plan.usable) notes.push("needs a second filament: add one in Solve.");
+      else {
+        notes.push(`slot ${plan.slot} · ${plan.layers} layer${plan.layers > 1 ? "s" : ""} (${plan.depthMm.toFixed(2)} mm) · mirrored to read when turned over.`);
+        if (plan.reduced) notes.push(`the base is only ${plan.baseMm.toFixed(2)} mm, so the art is ${plan.layers} layer${plan.layers > 1 ? "s" : ""} deep; raise base layers in Solve for more.`);
+        if (plan.thin) notes.push("the base is so thin the art may show through the front: raise base layers in Solve.");
+        if (art.cramped) notes.push("the print is small for the info block: it is set at its smallest and may be cropped.");
+        else if (art.small) notes.push("the info block's text is shrunk to fit this print and may print rough; a shorter name or email helps.");
+      }
+      backNote.textContent = notes.join(" ");
+    }, delay);
   };
 
   const info = h("div");
   const reinfo = () => {
+    const plan = backPlan(back);
     const est = mesh.estimates({ heights, w, h: hh, mask, filaments: s.filaments, layerH: lh,
-      baseLayers, physicalW: mm, pricePerKg: ex.price_per_kg ?? 25, bandMode: s.band_mode });
+      baseLayers, physicalW: mm, pricePerKg: ex.price_per_kg ?? 25, bandMode: s.band_mode,
+      back: back.enabled && plan.usable ? { slot: plan.slot, layers: plan.layers } : null });
     const [fw, fd] = est.footprint_mm;
+    stats.textContent = `${fw.toFixed(0)} × ${fd.toFixed(0)} mm · ${est.max_height_mm.toFixed(1)} mm tall · ` +
+      `${est.total_grams.toFixed(0)} g · $${est.total_cost.toFixed(2)}`;
     const tips = [];
     if (est.max_height_mm / Math.max(fw, fd) > 0.35) tips.push("tall for its footprint: add a brim in Studio");
-    if (Math.max(fw, fd) > BED_MM + 0.5) tips.push(`${fw.toFixed(0)} × ${fd.toFixed(0)} mm is bigger than the A1's ${BED_MM} mm plate: go back to Prep and make it smaller`);
-    else if (Math.max(fw, fd) > BED_MM - 22) tips.push("this nearly fills the plate: in Studio you may need to move the prime tower");
+    if (s.colours_auto) tips.push("these slot colours were fitted to the photo, not taken from your spools. The layers are planned for these exact colours: load spools close to them, or set each slot to your real spool's colour in Solve (that stops the fitting). Studio's \"Sync info\" swaps in your AMS colours without re-planning.");
     if (est.switches >= 6) tips.push(`${est.switches} colour changes is a lot of AMS time; keep spools dry`);
     tips.push(`slot 1 (${est.base_hex}) touches the plate: set bed temp and adhesion for that filament`);
     tips.push("wipe the plate with IPA before printing");
@@ -1649,30 +1843,107 @@ function renderExport(screen, action) {
   const name = h("input", { class: "val wide-val", value: app.project.name, onchange: (e) => {
     const v = e.target.value.trim();
     if (v) app.project.name = v;
+    redrawBack();
+  }, oninput: (e) => {
+    const v = e.target.value.trim();
+    if (v) { app.project.name = v; redrawBack(300); }
   } });
+
+  const showBack = () => {
+    if (!layout.dual && exportView !== "back") { exportView = "back"; showExport(); refreshChips(); }
+    redrawBack();
+  };
+  const backChange = () => { showBack(); restat(); reinfo(); };
+  const textField = (label, key) => h("label", { class: "field stacked" }, label,
+    h("input", { class: "val wide-val", value: backTexts()[key], oninput: (e) => {
+      setPref(`back.${key}`, e.target.value);
+      showBack();
+    } }));
+  // the topo pattern: from the name until "new pattern" picks a random one; ↶ steps back through this visit's picks
+  const seedHistory = [];
+  const patternInfo = h("span", { class: "meta" });
+  const prevBtn = h("button", { class: "chip", type: "button", onclick: () => {
+    if (!seedHistory.length) return;
+    back.seed = seedHistory.pop(); backChange(); paintPattern();
+  } }, "↶ previous");
+  const nameBtn = h("button", { class: "chip", type: "button", onclick: () => {
+    if (!back.seed) return;
+    seedHistory.push(back.seed); back.seed = 0; backChange(); paintPattern();
+  } }, "from name");
+  const patternRow = h("div", { class: "pattern-row" },
+    h("div", { class: "opt-grid", style: "--cols:3" },
+      h("button", { class: "chip accent", type: "button", onclick: () => {
+        seedHistory.push(back.seed); back.seed = backart.newBackSeed(); backChange(); paintPattern();
+      } }, "↻ new pattern"),
+      prevBtn, nameBtn),
+    patternInfo);
+  const paintPattern = () => {
+    patternRow.hidden = back.pattern !== "topo";
+    prevBtn.disabled = !seedHistory.length;
+    nameBtn.disabled = !back.seed;
+    patternInfo.textContent = back.seed
+      ? `pattern #${back.seed.toString(36).toUpperCase()}`
+      : "from the print's name";
+  };
+  paintPattern();
+
+  const slotChips = () => {
+    const plan = backPlan(back);
+    const opts = [{ key: 0, label: "auto" }, ...s.filaments.slice(1).map((f) => ({ key: f.slot,
+      label: h("span", { class: "chip-sw" }, h("i", { style: `background:${f.hex}` }), `slot ${f.slot}`) }))];
+    return gridChips(opts, plan.auto ? 0 : plan.slot, (k) => { back.slot = k; backChange(); }, Math.min(4, opts.length));
+  };
+  /** chipGroup laid out as an even grid, each option its own full-width button */
+  const gridChips = (opts, current, onPick, cols) => {
+    const g = chipGroup(opts, current, onPick);
+    g.className = "opt-grid";
+    g.style.setProperty("--cols", String(cols));
+    return g;
+  };
+  const optLabel = (text) => h("div", { class: "opt-label" }, text);
+  const backCard = h("div", { class: `back-card${back.enabled ? "" : " off"}` },
+    optLabel("art"),
+    gridChips([{ key: "on", label: "art on the back" }, { key: "off", label: "plain" }],
+      back.enabled ? "on" : "off", (k) => { back.enabled = k === "on"; backCard.classList.toggle("off", !back.enabled); backChange(); }, 2),
+    h("div", { class: "back-opts" },
+      optLabel("pattern"),
+      gridChips([{ key: "topo", label: "topo lines" }, { key: "plain", label: "info block only" }],
+        back.pattern, (k) => { back.pattern = k; backChange(); paintPattern(); }, 2),
+      patternRow,
+      optLabel("colour"),
+      slotChips(),
+      optLabel("thickness"),
+      gridChips([1, 2, 3].map((n) => ({ key: n, label: h("span", { class: "two-line" },
+        h("b", {}, `${n} layer${n > 1 ? "s" : ""}`), h("span", {}, `${backart.backDepthMm(n, lh).toFixed(2)} mm`)) })),
+        back.layers, (k) => { back.layers = k; backChange(); }, 3),
+      optLabel("info block"),
+      h("div", { class: "back-fields" }, textField("your name", "maker"), textField("email", "email"), textField("brand", "brand")),
+      backNote));
 
   // both previews when there is height for them, otherwise one at a time
   const showExport = () => {
     top.hidden = !layout.dual && exportView !== "top";
     oblique.hidden = !layout.dual && exportView !== "angle";
+    backCanvas.hidden = !layout.dual && exportView !== "back";
   };
-  const exportChips = chipGroup([{ key: "top", label: "top down" }, { key: "angle", label: "angle" }],
-    exportView, (k) => { exportView = k; showExport(); pulse(k === "top" ? top : oblique); });
+  const viewEls = { top, angle: oblique, back: backCanvas };
+  const exportChips = chipGroup([{ key: "top", label: "top down" }, { key: "angle", label: "angle" }, { key: "back", label: "back" }],
+    exportView, (k) => { exportView = k; showExport(); pulse(viewEls[k]); });
+  const refreshChips = () => exportChips.querySelectorAll(".chip").forEach((c, i) =>
+    c.classList.toggle("on", ["top", "angle", "back"][i] === exportView));
   showExport();
   screen.append(
     layout.dual
-      ? pane("view", frame("top down", top), frame("~30° from the plate", oblique), h("div", { class: "below-view" }, stats))
+      ? pane("view", frame("top down", top), frame("~30° from the plate", oblique),
+          frame("back, turned over", backCanvas), h("div", { class: "below-view" }, stats, warn))
       : pane("view", h("div", { class: "view-bar" }, exportChips, bigButton()),
-          frame(null, top, oblique), h("div", { class: "below-view" }, stats)),
+          frame(null, top, oblique, backCanvas), h("div", { class: "below-view" }, stats, warn)),
+    // the things to set first; the read-outs (slots, cost, size) at the bottom
     pane("ctrl",
-      head("filament slots"),
-      h("div", { class: "slots" }, s.filaments.map((f, i) =>
-        h("div", { class: "slot" }, h("span", { class: "sw", style: `background:${f.hex}` }),
-          `slot ${f.slot}  ${f.hex}${i === 0 ? " · lowest" : i === s.filaments.length - 1 ? " · top" : ""}`))),
-      head("filament & print info"),
-      info,
-      numField("price ($ / kg)", ex.price_per_kg ?? 25, { step: "1", min: 0, max: 500, fmt: (v) => v.toFixed(2),
-        onchange: (v) => { ex.price_per_kg = v; reinfo(); } }),
+      head("name"),
+      name,
+      head("back of the print"),
+      backCard,
       head("mesh detail"),
       chipGroup([{ key: "draft", label: "draft" }, { key: "standard", label: "standard" }, { key: "fine", label: "fine" }],
         exportOpts.detail, (k) => { exportOpts.detail = k; restat(); }),
@@ -1681,35 +1952,69 @@ function renderExport(screen, action) {
         h("button", { class: `chip${exportOpts.formats[k] ? " on" : ""}`, onclick: (e) => {
           exportOpts.formats[k] = !exportOpts.formats[k];
           e.currentTarget.classList.toggle("on", exportOpts.formats[k]);
+          restat();
         } }, label))),
-      head("name"),
-      name,
       filesBox,
+      head("filament slots"),
+      h("div", { class: "slots" }, s.filaments.map((f, i) =>
+        h("div", { class: "slot" }, h("span", { class: "sw", style: `background:${f.hex}` }),
+          `slot ${f.slot}  ${f.hex}${i === 0 ? " · lowest" : i === s.filaments.length - 1 ? " · top" : ""}`))),
+      head("filament & print info"),
+      info,
+      numField("price ($ / kg)", ex.price_per_kg ?? 25, { step: "1", min: 0, max: 500, fmt: (v) => v.toFixed(2),
+        onchange: (v) => { ex.price_per_kg = v; reinfo(); } }),
       head("project"),
       h("button", { class: "btn wide", onclick: () => exportProjectZip(app.project.id) },
         "save whole project (.zip) for the Mac")),
   );
 
+  // everything already saves as you go; this says so, and "save now" is there for peace of mind
+  const saveText = h("span", {});
+  const paintSaved = () => {
+    const t = lastSaved?.at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+    saveText.textContent = !lastSaved ? "✓ saved on this phone as you go"
+      : lastSaved.ok ? `✓ saved on this phone as you go · last ${t}` : `✕ last save failed (${t}) - is storage full?`;
+    saveLine.classList.toggle("bad", !!lastSaved && !lastSaved.ok);
+  };
+  const saveLine = h("div", { class: "save-line" }, saveText,
+    h("button", { class: "link save-now", type: "button", onclick: async () => {
+      if (await persistNow()) toast("saved");
+    } }, "save now"));
+  saveWatchers.add(paintSaved);
+  disposers.push(() => saveWatchers.delete(paintSaved));
+  paintSaved();
   action.append(
+    saveLine,
     h("button", { class: "btn ghost", onclick: () => go("solve") }, "back to solve"),
-    h("button", { class: "btn primary", onclick: () => commitExport() }, "commit  &  export  →"),
+    h("button", { class: "btn primary", onclick: () => commitExport() }, "export  ⬇"),
   );
-  requestAnimationFrame(() => { restat(); reinfo(); showFiles(); });
+  requestAnimationFrame(() => { restat(); reinfo(); showFiles(); redrawBack(0); });
 
   async function commitExport() {
     const formats = Object.keys(exportOpts.formats).filter((k) => exportOpts.formats[k]);
     if (!formats.length) return toast("Choose 3MF, STL, or both");
     const stem = (app.project.name || "huelite").replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "huelite";
+    const plan = backPlan(back);
+    const withBack = back.enabled && plan.usable;
     const files = await busy("building files…", async () => {
-      const model = mesh.buildModel(modelArgs());
+      // with back art the columns start above it, and two parts fill the first layers:
+      // the base with the art cut out, and the art (the same parts go in the 3MF and the STL)
+      const model = mesh.buildModel({ ...modelArgs(), bottomMm: withBack ? plan.depthMm : 0 });
       if (!model.parts.length) throw new Error("every filament band came out empty");
+      if (withBack) {
+        const art = await backart.renderBack(mesh.modelGrid(modelArgs()), { ...backTexts(), pattern: back.pattern, seed: back.seed });
+        for (const part of backart.backParts(art, { depthMm: plan.depthMm, slot: plan.slot, baseSlot: s.filaments[0].slot })) {
+          mesh.addMeshPart(model, part);
+        }
+      }
       const out = [];
       if (formats.includes("3mf")) {
         out.push(new File([await bambu3mf.make3mf(model,
           { colours: s.filaments.map((f) => f.hex), layerHeight: lh })], `${stem}.3mf`, { type: "model/3mf" }));
       }
       if (formats.includes("stl")) out.push(new File([bambu3mf.makeStl(model)], `${stem}.stl`, { type: "model/stl" }));
-      out.push(new File([bambu3mf.slotNote(s.filaments, { layerHeight: lh })], `${stem}-filament-slots.txt`, { type: "text/plain" }));
+      out.push(new File([bambu3mf.slotNote(s.filaments, { layerHeight: lh, back: withBack ? plan : null })],
+        `${stem}-filament-slots.txt`, { type: "text/plain" }));
       return out;
     }, { quiet: true }).catch((err) => { toast(`Export failed: ${err.message}`, 3000); return null; });
     if (!files) return;
@@ -1718,8 +2023,10 @@ function renderExport(screen, action) {
     lastFiles = files.map((f) => ({ name: f.name, url: URL.createObjectURL(f) }));
     ex.formats = formats;
     ex.last_export = { time: new Date().toISOString().slice(0, 19), detail: exportOpts.detail,
-                       plate: "A1", name: app.project.name, files: files.map((f) => f.name) };
+                       plate: "A1", name: app.project.name, files: files.map((f) => f.name),
+                       back: withBack ? { slot: plan.slot, layers: plan.layers } : null };
     setStatus("export", COMPLETE);
+    await persistNow();               // the click's own save ran before the export finished
     refreshStepper();
     showFiles();
     sfx.play("success");
@@ -1768,13 +2075,15 @@ function soundFor(el) {
   // the main menu is silent: only picking a project blips
   if (!app.project) return b.matches(".project-open, .card-open, .menu-continue") ? "select" : null;
   // sliders and the scroll bar never sound; the stage buttons have their own page sound
-  if (b.matches(".slider-step, .pal-sw, .fil-table .sw, .rail-btn, .action .btn.primary")) return null;
+  if (b.matches(".slider-step, .pal-sw, .fil-grid .sw, .rail-btn, .action .btn.primary")) return null;
   if (b.matches(".step")) return b.classList.contains("locked") ? null : "tab";   // locked: "blocked" plays
   return "tap";
 }
-// Press-down, not click: the sound lands with the finger. On the document, so
-// sheets and the update bar (which live outside the app root) are covered too.
-document.addEventListener("pointerdown", (e) => {
+// On the click, not the press: a finger that lands on a button to start a
+// scroll pressed it too, which made a stray "boop" while scrolling. The
+// browser sends no click after a scroll. On the document, so sheets and the
+// update bar (which live outside the app root) are covered too.
+document.addEventListener("click", (e) => {
   const name = soundFor(e.target);
   if (name) sfx.play(name);
 }, true);
@@ -1782,6 +2091,8 @@ document.addEventListener("pointerdown", (e) => {
 /** "calm" switches the slides, fades and loaders off (Settings > motion). */
 function applyMotion() { document.documentElement.dataset.motion = pref("motion", "full"); }
 applyMotion();
+function applyHints() { document.documentElement.dataset.hints = pref("hints", "off"); }
+applyHints();
 
 render();
 

@@ -10,6 +10,8 @@
 // app was opened from: http://192.168.x.x:5173 and an installed app each
 // keep their own projects.
 
+import { folderPath } from "./state.js";
+
 const DB_NAME = "huelite";
 const DB_VERSION = 1;
 let dbPromise = null;
@@ -80,17 +82,22 @@ export async function deleteProject(id) {
   });
 }
 
-/** File a project under a folder ("" = none) without touching anything else. */
+/** File a project under a folder path ("" = none) without touching anything else. */
 export async function setGroup(id, group) {
   const rec = await getProject(id);
   if (!rec) return;
-  rec.data.group = String(group || "").trim().slice(0, 60);
+  rec.data.group = folderPath(group);
   await saveProject(rec.data);
 }
 
-/** Rename a folder: every project in it follows. newName "" empties it. */
-export async function renameGroup(oldName, newName) {
+/** Move a folder to a new path - rename, move into another folder, or ""
+ *  to take it apart. Everything inside it, sub-folders too, follows:
+ *  "Christmas/Smith" -> "Family/Smith" also moves "Christmas/Smith/Kids". */
+export async function renameGroup(oldPath, newPath) {
+  oldPath = folderPath(oldPath);
+  if (!oldPath) return;
   for (const rec of await listProjects()) {
-    if ((rec.data.group || "") === oldName) await setGroup(rec.id, newName);
+    const g = folderPath(rec.data.group);
+    if (g === oldPath || g.startsWith(oldPath + "/")) await setGroup(rec.id, `${newPath}/${g.slice(oldPath.length + 1)}`);
   }
 }

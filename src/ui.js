@@ -7,6 +7,7 @@
 // deliberate grab, and everything else on the page scrolls normally.
 
 import { h } from "./dom.js";
+import { folderName, folderLeaf, joinFolder } from "./state.js";
 import { COMMON, hexToRgb, hsvToRgb, isHex, rgbToHsv, toHex } from "./colour.js";
 
 // ---------------------------------------------------------------- slider
@@ -395,19 +396,40 @@ function lum(hex) {
 // ---------------------------------------------------------------- folder sheet
 /** Pick a folder for a project, or make a new one. Same sheet as the colour
  *  picker, smaller. onPick(name) gets "" for "no folder". */
-export function folderSheet({ title, folders, current = "", onPick, onClose }) {
+/** Pick a folder (a path, "" = none) from the tree, or make a new one at the
+ *  top or inside any folder. `exclude` hides a folder and everything in it
+ *  (moving a folder can't put it inside itself). */
+export function folderSheet({ title, folders, current = "", onPick, onClose, exclude = null, noneLabel = "no folder" }) {
   const onKey = (e) => { if (e.key === "Escape") close(); };
   function close() {
     document.removeEventListener("keydown", onKey);
     backdrop.remove();
     onClose?.();
   }
-  const pick = (name) => { close(); onPick(name); };
-  const chip = (label, name) => h("button", { class: `chip${name === current ? " on" : ""}`, type: "button",
-    onclick: () => pick(name) }, label);
+  const pick = (path) => { close(); onPick(path); };
+  const shown = folders.filter((f) => !exclude || (f !== exclude && !f.startsWith(exclude + "/")));
+  let parent = "";
+  const inLabel = h("span", { class: "folder-in" });
+  const paintParent = () => {
+    inLabel.textContent = parent ? `inside: ${parent.replaceAll("/", " › ")}` : "at the top level";
+    clearIn.hidden = !parent;
+    tree.querySelectorAll(".folder-add").forEach((b) => b.classList.toggle("on", b.dataset.path === parent));
+  };
+  const clearIn = h("button", { class: "chip", type: "button", onclick: () => { parent = ""; paintParent(); } }, "top level");
+  const tree = h("div", { class: "folder-tree" },
+    h("div", { class: "folder-row" },
+      h("button", { class: `folder-pick${current === "" ? " on" : ""}`, type: "button", onclick: () => pick("") }, noneLabel)),
+    shown.map((f) => {
+      const depth = f.split("/").length - 1;
+      return h("div", { class: "folder-row", style: `--depth:${depth}` },
+        h("button", { class: `folder-pick${f === current ? " on" : ""}`, type: "button", onclick: () => pick(f) },
+          h("span", { class: "folder-ico" }, depth ? "└ " : ""), folderLeaf(f)),
+        h("button", { class: "folder-add chip", type: "button", "data-path": f, title: `new folder inside ${f}`,
+          onclick: () => { parent = f; paintParent(); input.focus(); } }, "+ inside"));
+    }));
   const input = h("input", { class: "val wide-val", placeholder: "new folder name", maxlength: "40",
     autocomplete: "off", "aria-label": "new folder name" });
-  const create = () => { const v = input.value.trim(); if (v) pick(v.slice(0, 40)); };
+  const create = () => { const v = folderName(input.value); if (v) pick(joinFolder(parent, v)); };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") create(); });
   document.addEventListener("keydown", onKey);
 
@@ -415,9 +437,27 @@ export function folderSheet({ title, folders, current = "", onPick, onClose }) {
     h("div", { class: "sheet-bar" }, h("b", {}, title),
       h("button", { class: "sheet-x", type: "button", "aria-label": "close", onclick: close }, "✕")),
     h("div", { class: "sheet-head" }, "[ file under ]"),
-    h("div", { class: "chips" }, chip("no folder", ""), folders.map((f) => chip(f, f))),
+    tree,
     h("div", { class: "sheet-head" }, "[ or a new folder ]"),
+    h("div", { class: "folder-in-row" }, inLabel, clearIn),
     h("div", { class: "row" }, input, h("button", { class: "btn", type: "button", onclick: create }, "create")));
+  paintParent();
+  const backdrop = h("div", { class: "sheet-backdrop", onpointerdown: (e) => { if (e.target === backdrop) close(); } }, sheet);
+  document.body.append(backdrop);
+  return { close };
+}
+
+/** A short list of actions in a bottom sheet (folder options on the home screen). */
+export function actionSheet({ title, actions }) {
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  function close() { document.removeEventListener("keydown", onKey); backdrop.remove(); }
+  document.addEventListener("keydown", onKey);
+  const sheet = h("div", { class: "sheet", role: "dialog", "aria-label": title },
+    h("div", { class: "sheet-bar" }, h("b", {}, title),
+      h("button", { class: "sheet-x", type: "button", "aria-label": "close", onclick: close }, "✕")),
+    h("div", { class: "action-list" }, actions.map(([label, hint, fn]) =>
+      h("button", { class: "btn wide action-btn", type: "button", onclick: () => { close(); fn(); } },
+        h("b", {}, label), hint ? h("span", { class: "meta" }, hint) : null))));
   const backdrop = h("div", { class: "sheet-backdrop", onpointerdown: (e) => { if (e.target === backdrop) close(); } }, sheet);
   document.body.append(backdrop);
   return { close };
