@@ -23,7 +23,7 @@ const live = [];                // wall-clock times at which started sounds fini
 let unlocked = false;           // true once the person has touched the page
 const last = {};
 
-const STAGE_BASE = { prep: 72, solve: 76, export: 79 };
+const STAGE_BASE = { prep: 72, solve: 76, back: 79, export: 84 };   // C5 E5 G5 C6: a rising arpeggio
 const hz = (m) => 440 * Math.pow(2, (m - 69) / 12);
 const clamp01 = (x) => Math.min(1, Math.max(0, +x || 0));
 

@@ -4,7 +4,7 @@ Source of truth: `src/styles.css` in the huelite-mobile repo. Hex values below a
 
 ## Look and feel
 
-Dark, blueprint-style. Very dark ground with a faint grid, square corners, a monospace font, and small bracketed headings like `[ FILAMENTS ]`. The app changes accent color as you move through its three stages.
+Dark, blueprint-style. Very dark ground with a faint grid, square corners, a monospace font, and small bracketed headings like `[ FILAMENTS ]`. The app changes accent color as you move through its four stages.
 
 ## Base colors (used on every screen)
 
@@ -26,7 +26,8 @@ Grid overlay: `rgba(255, 255, 255, 0.035)`, 16px squares.
 | --------- | ----------- | --------- | --------- | --------- | -------------------- |
 | 01 Prep   | Sage        | `#8FC796` | Moss      | `#3F9A62` | Ink `#111110`        |
 | 02 Solve  | Sky         | `#7A9ED0` | Navy      | `#243B60` | Bone `#E6E6DC`       |
-| 03 Export | Cream       | `#DACFB4` | Bronze    | `#8A6A3E` | Ink `#111110`        |
+| 03 Back   | Lilac       | `#B7A6D9` | Plum      | `#4E4275` | Ink `#111110`        |
+| 04 Export | Cream       | `#DACFB4` | Bronze    | `#8A6A3E` | Ink `#111110`        |
 
 ## Layer colors (the stacked-bars mark)
 
@@ -64,6 +65,8 @@ Warning / destructive actions only: Danger `#E07A5F`.
   --navy: #243b60;
   --cream: #dacfb4;
   --bronze: #8a6a3e;
+  --lilac: #b7a6d9;
+  --plum: #4e4275;
   --danger: #e07a5f;
 
   --mono: ui-monospace, "SF Mono", Menlo, "Roboto Mono", monospace;

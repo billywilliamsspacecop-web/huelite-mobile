@@ -32,6 +32,8 @@
 html[data-stage="prep"] { --accent: #8fc796; --fill: #3f9a62; --on-accent: #111110; }
 /* Solve: accent SKY, fill NAVY. */
 html[data-stage="solve"] { --accent: #7a9ed0; --fill: #243b60; --on-accent: #e6e6dc; }
+/* Back: accent LILAC, fill PLUM. */
+html[data-stage="back"] { --accent: #b7a6d9; --fill: #4e4275; --on-accent: #111110; }
 /* Export: accent CREAM, fill a muted bronze. */
 html[data-stage="export"] { --accent: #dacfb4; --fill: #8a6a3e; --on-accent: #111110; }
 
@@ -717,3 +719,35 @@ html:not([data-hints="on"]) .hint { display: none; }
   font-size: 12px; line-height: 1.45; color: var(--text); }
 .warn-box p { margin: 0; }
 .warn-box p + p { margin-top: 6px; }
+
+/* ---- Back stage: line-art gallery ---- */
+.art-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.art-tabs::-webkit-scrollbar { display: none; }
+.art-tabs .chip { white-space: nowrap; }
+/* two rows that scroll sideways, so 41 designs don't push the rest of the page down */
+.art-grid { display: grid; grid-auto-flow: column; grid-template-rows: repeat(2, auto); grid-auto-columns: 96px;
+  gap: 6px; overflow-x: auto; padding: 8px 0 6px; scroll-snap-type: x proximity; overscroll-behavior-x: contain; }
+.art-tile { display: flex; flex-direction: column; gap: 4px; padding: 3px; background: var(--well);
+  border: 1px solid var(--line); color: var(--muted); font: inherit; font-size: 10px; text-align: left;
+  scroll-snap-align: start; min-width: 0; }
+.art-tile canvas { width: 100%; aspect-ratio: 1; display: block; }
+.art-tile span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 2px 2px; }
+.art-tile.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); color: var(--text); font-weight: 700; }
+html[data-side="1"] .art-grid { grid-template-rows: repeat(3, auto); }
+.art-pick { margin-top: 4px; }
+.art-pick b { color: var(--accent); }
+.art-pick .art-group { color: var(--muted); font-size: 11px; }
+.art-pick .meta { margin: 4px 0 0; }
+.art-off .ctrl-inner > .group:not(:first-child) { opacity: .4; pointer-events: none; }
+.line-check { margin: 6px 0 0; font-size: 12px; padding: 6px 8px; border: 1px solid var(--line); }
+.line-check.ok { color: var(--sage, #8fc796); }
+.line-check.warn { color: #dacfb4; border-color: #8a6a3e; }
+.line-check.bad { color: #e07a5f; border-color: #e07a5f; }
+.back-sum { margin: 8px 0 0; font-size: 13px; color: var(--text); }
+/* four stage tabs: keep each on one line on a narrow phone */
+.step { white-space: nowrap; }
+@media (max-width: 430px) {
+  .stepper { gap: 4px; padding-left: 10px; padding-right: 10px; }
+  .step { gap: 4px; letter-spacing: .03em; font-size: 10.5px; padding: 0 2px; }
+  .step.done .num::after { content: "✓"; }
+}

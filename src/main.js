@@ -7,6 +7,7 @@ import * as solve from "./engine/solve.js";
 import * as mesh from "./engine/mesh.js";
 import * as bambu3mf from "./engine/bambu3mf.js";
 import * as backart from "./engine/backart.js";
+import * as lineart from "./engine/lineart.js";
 import * as imaging from "./engine/imaging.js";
 import { createView3D, renderSideThumb } from "./engine/view3d.js";
 import { attachSwipe } from "./swipe.js";
@@ -141,6 +142,7 @@ function rangeField(labelText, value, { min, max, step = 1, fmt, oninput, key = 
 const STAGE_SUB = {
   prep: "crop, orient, size and shape the source",
   solve: "filament stack and depth",
+  back: "line art for the plate side",
   export: "mesh, package, and send to the printer",
 };
 
@@ -337,7 +339,7 @@ async function openProject(id) {
     preSuggest = null;
     aspectKey = "free";
     const st = app.project.status;
-    go(st.solve === COMPLETE ? "export" : st.prep === COMPLETE ? "solve" : "prep");
+    go(st.back === COMPLETE ? "export" : st.solve === COMPLETE ? "back" : st.prep === COMPLETE ? "solve" : "prep");
   }, { quiet: true });
 }
 
@@ -552,7 +554,7 @@ function render() {
 
   const screen = h("main", { class: "screen" });
   const action = h("div", { class: "action" });
-  ({ prep: renderPrep, solve: renderSolve, export: renderExport })[app.stage](screen, action);
+  ({ prep: renderPrep, solve: renderSolve, back: renderBackStage, export: renderExport })[app.stage](screen, action);
   const dock = h("div", { class: "dock" }, action.childElementCount ? action : null,
     home ? null : renderStepper());
   const body = h("div", { class: "body" }, screen);
@@ -1276,10 +1278,11 @@ function menuSettings(screen) {
 function menuHelp(screen) {
   const para = (title, text) => [h("p", { class: "note" }, h("b", {}, title + "  "), text)];
   screen.append(pane("ctrl",
-    head("the three steps"),
+    head("the four steps"),
     para("01 Prep", "crop the photo, choose its shape (rectangle, oval, cut-out, or lasso your own), set the print width, and shape the picture. decimate (how many colours) and saturation matter most."),
     para("02 Solve", "choose up to four filaments. \"fit colours to photo\" picks the colours that make the printed stack look most like your photo. layers per filament set the thickness; print, angle, height and photo views show the result."),
-    para("03 Export", "check cost and size, pick the mesh detail, and save a Bambu .3mf (or STL) for the A1. open it in Bambu Studio."),
+    para("03 Back", "line art printed on the plate side, in a second filament: pick one of 40 designs (or topo lines), reseed it, set the line weight, and choose the info block, colour and thickness. it reads when the print is turned over."),
+    para("04 Export", "check cost and size, pick the mesh detail, and save a Bambu .3mf (or STL) for the A1. open it in Bambu Studio."),
 
     head("moving around"),
     h("ul", { class: "tips" },
@@ -1683,7 +1686,7 @@ function renderSolve(screen, action) {
 
   action.append(
     h("button", { class: "btn ghost", onclick: () => go("prep") }, "back to prep"),
-    h("button", { class: "btn primary", onclick: commitSolve }, "next: export  →"),
+    h("button", { class: "btn primary", onclick: commitSolve }, "next: back  →"),
   );
   requestAnimationFrame(recompute);
 }
@@ -1728,8 +1731,213 @@ async function commitSolve() {
     const top = canvasOf(mesh.renderTop({ heights, w, h: hh, lut, mask: app.prepped.mask, layerH: lh,
       baseMm: baseLayers * lh, cellMm: app.project.prep.physical_width_mm / w, shaded: false }));
     await persistNow(await thumbBlob(top));
-    go("export");
+    go("back");
   }, { quiet: true });
+}
+
+// ---------------------------------------------------------------- back
+// Line art for the plate side: a gallery of the 40 designs (engine/lineart.js)
+// plus the built-in topo lines, then seed, line weight, info block, colour
+// and thickness. Export shows the result and builds it.
+let artFilter = "All";        // gallery tab on the Back stage
+const seedHistory = [];       // "↶ previous" steps back through this visit's picks
+
+function renderBackStage(screen, action) {
+  if (!app.solved) {
+    screen.append(h("div", { class: "todo" }, h("b", {}, "nothing solved"),
+      "Go back to Solve and continue from there."));
+    return;
+  }
+  const { s, lh } = solveSettings();
+  const back = backSettings();
+  seedHistory.length = 0;
+
+  // a change here makes the last export out of date
+  const touched = () => {
+    if (app.project.status.export === COMPLETE) { app.project.status.export = PENDING; refreshStepper(); }
+  };
+
+  // ---- the back as it will print, turned over
+  const canvas = h("canvas", { class: "preview-out" });
+  const note = h("p", { class: "meta" });
+  const lineCheck = h("p", { class: "line-check", hidden: true });
+  let timer = 0, seq = 0;
+  const redraw = (delay = 120) => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const my = ++seq;
+      const plan = backPlan(back);
+      const art = await backart.renderBack(mesh.modelGrid(modelArgs()),
+        { ...backArtOpts(back), maxPixels: 1_000_000, minPx: 0.12 });
+      if (my !== seq || !canvas.isConnected) return;
+      const shown = back.enabled && plan.usable ? art : { ...art, field: new Float32Array(art.field.length) };
+      const img = backart.backPreview(shown, s.filaments[0].hex, plan.hex);
+      canvas.width = img.width; canvas.height = img.height;
+      canvas.getContext("2d").putImageData(img, 0, 0);
+      const lined = back.enabled && back.pattern !== "plain" && art.thinnest < Infinity;
+      const v = lineart.thinnestVerdict(art.thinnest);
+      lineCheck.hidden = !lined;
+      lineCheck.className = `line-check ${v.level}`;
+      lineCheck.textContent = lined ? `thinnest line ${art.thinnest.toFixed(2)} mm · ${v.text}` : "";
+      note.textContent = backNotes(back, plan, art).join(" ");
+    }, delay);
+  };
+  const changed = (delay) => { touched(); redraw(delay); };
+
+  // ---- gallery: "border only", then every design (the generator's topo tile is the built-in topo lines)
+  const tiles = [
+    { key: "plain", name: "Border only", group: null, note: "No pattern: just the border and the info block." },
+    ...lineart.DESIGNS.map((d) => d.id === "topo"
+      ? { key: "topo", name: d.name, group: d.group, note: "The original look: contour lines that follow the print's outline and keep clear of the info block." }
+      : { key: d.id, design: d.id, name: d.name, group: d.group, note: d.note }),
+  ];
+  const keyOf = () => (back.pattern === "design" ? back.design : back.pattern);
+  const seedNow = () => (back.seed >>> 0) || backart.hashString(app.project.name || "print");
+  const thumbPx = Math.round(120 * Math.min(2, window.devicePixelRatio || 1));
+  const pickName = h("b", {});
+  const pickGroup = h("span", { class: "art-group" });
+  const pickNote = h("p", { class: "meta" });
+  const paintPick = () => {
+    const t = tiles.find((x) => x.key === keyOf()) || tiles[1];
+    pickName.textContent = t.name;
+    pickGroup.textContent = t.group ? `· ${t.group}` : "";
+    pickNote.textContent = t.note;
+    tileEls.forEach((el, i) => el.classList.toggle("on", tiles[i].key === t.key));
+  };
+  const tileEls = tiles.map((t) => {
+    const cv = h("canvas", { width: thumbPx, height: thumbPx });
+    return h("button", { class: "art-tile", type: "button", title: t.name, "aria-label": t.name, onclick: () => {
+      if (t.key === "plain" || t.key === "topo") back.pattern = t.key;
+      else { back.pattern = "design"; back.design = t.design; }
+      paintPick(); paintSeed(); changed(0);
+    } }, cv, h("span", {}, t.name));
+  });
+  const showTab = () => tileEls.forEach((el, i) => {
+    el.hidden = artFilter !== "All" && tiles[i].group !== artFilter;
+  });
+  // thumbnails: in the filament colours, a couple per tick so the page stays responsive
+  let thumbGen = 0, thumbTimer = 0;
+  const drawPlainThumb = (cv, ink, bg) => {
+    const c = cv.getContext("2d"), u = cv.width / 200;
+    c.fillStyle = bg; c.fillRect(0, 0, cv.width, cv.height);
+    c.strokeStyle = ink; c.lineWidth = 2.2 * u; c.strokeRect(12 * u, 12 * u, 176 * u, 176 * u);
+    c.fillStyle = ink;
+    c.fillRect(112 * u, 150 * u, 64 * u, 26 * u);
+  };
+  const drawThumbs = (delay = 0) => {
+    clearTimeout(thumbTimer);
+    thumbTimer = setTimeout(() => {
+      const gen = ++thumbGen;
+      const ink = backPlan(back).hex, bg = s.filaments[0].hex, seed = seedNow(), weight = back.weight ?? 1;
+      // the tab on show first, then the rest
+      const order = tiles.map((_, i) => i).sort((a, b) => tileEls[a].hidden - tileEls[b].hidden);
+      let k = 0;
+      const step = () => {
+        if (gen !== thumbGen || !canvas.isConnected) return;
+        for (let n = 0; n < 2 && k < order.length; n++, k++) {
+          const i = order[k], cv = tileEls[i].firstChild;
+          if (tiles[i].key === "plain") drawPlainThumb(cv, ink, bg);
+          else lineart.drawThumb(cv, tiles[i].design || "topo", { seed, weight, ink, bg });
+        }
+        if (k < order.length) setTimeout(step, 0);
+      };
+      step();
+    }, delay);
+  };
+  const tabs = chipGroup([{ key: "All", label: `all ${lineart.DESIGNS.length}` },
+    ...lineart.GROUPS.map((g) => ({ key: g, label: g.toLowerCase() }))], artFilter,
+  (k) => { artFilter = k; showTab(); });
+  tabs.classList.add("art-tabs");
+
+  // ---- pattern number: from the name until "new pattern" picks a random one
+  const seedInfo = h("span", { class: "meta" });
+  const prevBtn = h("button", { class: "chip", type: "button", onclick: () => {
+    if (!seedHistory.length) return;
+    back.seed = seedHistory.pop(); paintSeed(); changed(0); drawThumbs(); } }, "↶ previous");
+  const nameBtn = h("button", { class: "chip", type: "button", onclick: () => {
+    if (!back.seed) return;
+    seedHistory.push(back.seed); back.seed = 0; paintSeed(); changed(0); drawThumbs(); } }, "from name");
+  const seedRow = h("div", { class: "pattern-row" },
+    h("div", { class: "opt-grid", style: "--cols:3" },
+      h("button", { class: "chip accent", type: "button", onclick: () => {
+        seedHistory.push(back.seed); back.seed = backart.newBackSeed(); paintSeed(); changed(0); drawThumbs();
+      } }, "↻ new pattern"), prevBtn, nameBtn),
+    seedInfo);
+  const paintSeed = () => {
+    prevBtn.disabled = !seedHistory.length;
+    nameBtn.disabled = !back.seed;
+    seedInfo.textContent = back.pattern === "plain" ? "border only has no pattern to vary"
+      : back.seed ? `pattern #${back.seed.toString(36).toUpperCase()}` : "from the print's name";
+  };
+
+  // ---- the rest of the settings
+  const optGrid = (opts, current, onPick, cols) => {
+    const g = chipGroup(opts, current, onPick);
+    g.className = "opt-grid";
+    g.style.setProperty("--cols", String(cols));
+    return g;
+  };
+  const weight = rangeField("line weight", Math.round((back.weight ?? 1) * 100), {
+    min: lineart.WEIGHT_MIN * 100, max: lineart.WEIGHT_MAX * 100, step: 5, fmt: (v) => `${(v / 100).toFixed(2)}×`,
+    oninput: (v) => { back.weight = v / 100; changed(150); drawThumbs(300); } });
+  const textField = (label, key) => h("label", { class: "field stacked" }, label,
+    h("input", { class: "val wide-val", value: backTexts()[key], oninput: (e) => {
+      setPref(`back.${key}`, e.target.value);
+      changed(300);
+    } }));
+  const fields = h("div", { class: "back-fields" }, textField("your name", "maker"), textField("email", "email"), textField("brand", "brand"));
+  fields.hidden = back.info === false;
+  const fil = s.filaments;
+  const slotOpts = [{ key: 0, label: "auto" }, ...fil.slice(1).map((f) => ({ key: f.slot,
+    label: h("span", { class: "chip-sw" }, h("i", { style: `background:${f.hex}` }), `slot ${f.slot}`) }))];
+  const setOff = () => screen.classList.toggle("art-off", !back.enabled);
+
+  screen.append(
+    pane("view", frame("back, turned over", canvas), h("div", { class: "below-view" }, lineCheck, note)),
+    pane("ctrl",
+      head("art on the back"),
+      optGrid([{ key: "on", label: "line art" }, { key: "off", label: "plain back" }], back.enabled ? "on" : "off",
+        (k) => { back.enabled = k === "on"; setOff(); changed(0); }, 2),
+      head("design"),
+      tabs,
+      h("div", { class: "art-grid" }, tileEls),
+      h("div", { class: "art-pick" }, h("div", {}, pickName, " ", pickGroup), pickNote),
+      head("pattern"),
+      seedRow,
+      weight,
+      h("p", { class: "meta hint" }, "line widths are real millimetres. a design keeps its size on prints up to 200 mm and grows to cover bigger ones."),
+      head("info block"),
+      optGrid([{ key: "on", label: "border + info block" }, { key: "off", label: "border only" }], back.info === false ? "off" : "on",
+        (k) => { back.info = k === "on"; fields.hidden = !back.info; changed(0); }, 2),
+      fields,
+      head("colour"),
+      optGrid(slotOpts, backPlan(back).auto ? 0 : backPlan(back).slot,
+        (k) => { back.slot = k; changed(0); drawThumbs(); }, Math.min(4, slotOpts.length)),
+      head("thickness"),
+      optGrid([1, 2, 3].map((n) => ({ key: n, label: h("span", { class: "two-line" },
+        h("b", {}, `${n} layer${n > 1 ? "s" : ""}`), h("span", {}, `${backart.backDepthMm(n, lh).toFixed(2)} mm`)) })),
+      back.layers, (k) => { back.layers = k; changed(0); }, 3)),
+  );
+  setOff();
+  showTab();
+  paintPick();
+  paintSeed();
+
+  action.append(
+    h("button", { class: "btn ghost", onclick: () => go("solve") }, "back to solve"),
+    h("button", { class: "btn primary", onclick: async () => {
+      setStatus("back", COMPLETE);
+      await persistNow();
+      go("export");
+    } }, "next: export  →"),
+  );
+  requestAnimationFrame(() => {
+    redraw(0);
+    drawThumbs(60);
+    // bring the picked design into view in the gallery strip (sideways only; the page stays put)
+    const on = root.querySelector(".art-tile.on:not([hidden])"), strip = on?.parentElement;
+    if (on && strip) strip.scrollLeft = on.offsetLeft - strip.offsetLeft - (strip.clientWidth - on.offsetWidth) / 2;
+  });
 }
 
 // ---------------------------------------------------------------- export
@@ -1769,6 +1977,36 @@ function backPlan(back) {
            thin: depthMm > baseMm - lh + 1e-6 };
 }
 
+/** The project's back settings, with defaults filled in for older projects. */
+function backSettings() {
+  const ex = app.project.export;
+  ex.back = { enabled: true, slot: 0, layers: 2, pattern: "topo", design: "", seed: 0, weight: 1, info: true, ...(ex.back || {}) };
+  if (ex.back.pattern === "design" && !lineart.designById(ex.back.design)) ex.back.pattern = "topo";
+  return ex.back;
+}
+
+/** backart.renderBack options for these settings. */
+const backArtOpts = (back) => ({ ...backTexts(), pattern: back.pattern, design: back.design, seed: back.seed,
+                                 weight: back.weight ?? 1, info: back.info !== false });
+
+const backArtName = (back) => back.pattern === "design" ? (lineart.designById(back.design)?.name || "design")
+  : back.pattern === "topo" ? "Topographic" : "border only";
+
+/** What to tell the user about a rendered back (Back and Export share it). */
+function backNotes(back, plan, art) {
+  const notes = [];
+  if (!back.enabled) notes.push("back art is off: the plate side prints plain.");
+  else if (!plan.usable) notes.push("needs a second filament: add one in Solve.");
+  else {
+    notes.push(`slot ${plan.slot} · ${plan.layers} layer${plan.layers > 1 ? "s" : ""} (${plan.depthMm.toFixed(2)} mm) · mirrored to read when turned over.`);
+    if (plan.reduced) notes.push(`the base is only ${plan.baseMm.toFixed(2)} mm, so the art is ${plan.layers} layer${plan.layers > 1 ? "s" : ""} deep; raise base layers in Solve for more.`);
+    if (plan.thin) notes.push("the base is so thin the art may show through the front: raise base layers in Solve.");
+    if (art.cramped) notes.push("the print is small for the info block: it is set at its smallest and may be cropped.");
+    else if (art.small) notes.push("the info block's text is shrunk to fit this print and may print rough; a shorter name or email helps.");
+  }
+  return notes;
+}
+
 function renderExport(screen, action) {
   if (!app.solved) {
     screen.append(h("div", { class: "todo" }, h("b", {}, "nothing solved"),
@@ -1798,8 +2036,7 @@ function renderExport(screen, action) {
 
   const stats = h("p", { class: "meta" }, "…");
   const warn = h("div", { class: "warn-box", hidden: true });
-  ex.back ??= { enabled: true, slot: 0, layers: 2, pattern: "topo" };
-  const back = ex.back;
+  const back = backSettings();
 
   // problems that ruin a print or a phone: shown big, under the preview
   const restat = () => {
@@ -1830,7 +2067,7 @@ function renderExport(screen, action) {
       const plan = backPlan(back);
       const grid = mesh.modelGrid(modelArgs());
       // fine enough to read the email when you zoom in (about 0.12 mm a pixel), still well under 0.1 s
-      const art = await backart.renderBack(grid, { ...backTexts(), pattern: back.pattern, seed: back.seed, maxPixels: 1_000_000, minPx: 0.12 });
+      const art = await backart.renderBack(grid, { ...backArtOpts(back), maxPixels: 1_000_000, minPx: 0.12 });
       if (seq !== backSeq || !backCanvas.isConnected) return;
       const shown = back.enabled && plan.usable ? art : { ...art, field: new Float32Array(art.field.length) };
       const img = backart.backPreview(shown, s.filaments[0].hex, plan.hex);
@@ -1839,16 +2076,7 @@ function renderExport(screen, action) {
       // the 3D view's underside: tap "⇅ back" there to turn the print over
       gl3?.setBack({ image: backart.backPreview(shown, s.filaments[0].hex, plan.hex, null),
                      widthMm: art.widthMm, heightMm: art.heightMm });
-      const notes = [];
-      if (!back.enabled) notes.push("back art is off: the plate side prints plain.");
-      else if (!plan.usable) notes.push("needs a second filament: add one in Solve.");
-      else {
-        notes.push(`slot ${plan.slot} · ${plan.layers} layer${plan.layers > 1 ? "s" : ""} (${plan.depthMm.toFixed(2)} mm) · mirrored to read when turned over.`);
-        if (plan.reduced) notes.push(`the base is only ${plan.baseMm.toFixed(2)} mm, so the art is ${plan.layers} layer${plan.layers > 1 ? "s" : ""} deep; raise base layers in Solve for more.`);
-        if (plan.thin) notes.push("the base is so thin the art may show through the front: raise base layers in Solve.");
-        if (art.cramped) notes.push("the print is small for the info block: it is set at its smallest and may be cropped.");
-        else if (art.small) notes.push("the info block's text is shrunk to fit this print and may print rough; a shorter name or email helps.");
-      }
+      const notes = backNotes(back, plan, art);
       backNote.textContent = notes.join(" ");
     }, delay);
   };
@@ -1894,76 +2122,16 @@ function renderExport(screen, action) {
     if (v) { app.project.name = v; redrawBack(300); }
   } });
 
-  const showBack = () => {
-    if (!layout.dual && exportView !== "back") { exportView = "back"; showExport(); refreshChips(); }
-    redrawBack();
-  };
-  const backChange = () => { showBack(); restat(); reinfo(); };
-  const textField = (label, key) => h("label", { class: "field stacked" }, label,
-    h("input", { class: "val wide-val", value: backTexts()[key], oninput: (e) => {
-      setPref(`back.${key}`, e.target.value);
-      showBack();
-    } }));
-  // the topo pattern: from the name until "new pattern" picks a random one; ↶ steps back through this visit's picks
-  const seedHistory = [];
-  const patternInfo = h("span", { class: "meta" });
-  const prevBtn = h("button", { class: "chip", type: "button", onclick: () => {
-    if (!seedHistory.length) return;
-    back.seed = seedHistory.pop(); backChange(); paintPattern();
-  } }, "↶ previous");
-  const nameBtn = h("button", { class: "chip", type: "button", onclick: () => {
-    if (!back.seed) return;
-    seedHistory.push(back.seed); back.seed = 0; backChange(); paintPattern();
-  } }, "from name");
-  const patternRow = h("div", { class: "pattern-row" },
-    h("div", { class: "opt-grid", style: "--cols:3" },
-      h("button", { class: "chip accent", type: "button", onclick: () => {
-        seedHistory.push(back.seed); back.seed = backart.newBackSeed(); backChange(); paintPattern();
-      } }, "↻ new pattern"),
-      prevBtn, nameBtn),
-    patternInfo);
-  const paintPattern = () => {
-    patternRow.hidden = back.pattern !== "topo";
-    prevBtn.disabled = !seedHistory.length;
-    nameBtn.disabled = !back.seed;
-    patternInfo.textContent = back.seed
-      ? `pattern #${back.seed.toString(36).toUpperCase()}`
-      : "from the print's name";
-  };
-  paintPattern();
-
-  const slotChips = () => {
-    const plan = backPlan(back);
-    const opts = [{ key: 0, label: "auto" }, ...s.filaments.slice(1).map((f) => ({ key: f.slot,
-      label: h("span", { class: "chip-sw" }, h("i", { style: `background:${f.hex}` }), `slot ${f.slot}`) }))];
-    return gridChips(opts, plan.auto ? 0 : plan.slot, (k) => { back.slot = k; backChange(); }, Math.min(4, opts.length));
-  };
-  /** chipGroup laid out as an even grid, each option its own full-width button */
-  const gridChips = (opts, current, onPick, cols) => {
-    const g = chipGroup(opts, current, onPick);
-    g.className = "opt-grid";
-    g.style.setProperty("--cols", String(cols));
-    return g;
-  };
-  const optLabel = (text) => h("div", { class: "opt-label" }, text);
+  // the back art is set on the Back stage; here it is a summary and a way back
+  const plan0 = backPlan(back);
   const backCard = h("div", { class: `back-card${back.enabled ? "" : " off"}` },
-    optLabel("art"),
-    gridChips([{ key: "on", label: "art on the back" }, { key: "off", label: "plain" }],
-      back.enabled ? "on" : "off", (k) => { back.enabled = k === "on"; backCard.classList.toggle("off", !back.enabled); backChange(); }, 2),
-    h("div", { class: "back-opts" },
-      optLabel("pattern"),
-      gridChips([{ key: "topo", label: "topo lines" }, { key: "plain", label: "info block only" }],
-        back.pattern, (k) => { back.pattern = k; backChange(); paintPattern(); }, 2),
-      patternRow,
-      optLabel("colour"),
-      slotChips(),
-      optLabel("thickness"),
-      gridChips([1, 2, 3].map((n) => ({ key: n, label: h("span", { class: "two-line" },
-        h("b", {}, `${n} layer${n > 1 ? "s" : ""}`), h("span", {}, `${backart.backDepthMm(n, lh).toFixed(2)} mm`)) })),
-        back.layers, (k) => { back.layers = k; backChange(); }, 3),
-      optLabel("info block"),
-      h("div", { class: "back-fields" }, textField("your name", "maker"), textField("email", "email"), textField("brand", "brand")),
-      backNote));
+    h("p", { class: "back-sum" }, back.enabled
+      ? [backArtName(back), back.pattern !== "plain" && `${(back.weight ?? 1).toFixed(2)}× lines`,
+         back.info !== false ? "info block" : "no info block", `slot ${plan0.slot}`,
+         `${plan0.layers} layer${plan0.layers > 1 ? "s" : ""}`].filter(Boolean).join(" · ")
+      : "plain: no art on the plate side"),
+    backNote,
+    h("button", { class: "btn wide gap-top", type: "button", onclick: () => go("back") }, "‹ change the back art"));
 
   // both previews when there is height for them, otherwise one at a time
   const showExport = () => {
@@ -2030,7 +2198,7 @@ function renderExport(screen, action) {
   paintSaved();
   action.append(
     saveLine,
-    h("button", { class: "btn ghost", onclick: () => go("solve") }, "back to solve"),
+    h("button", { class: "btn ghost", onclick: () => go("back") }, "back to back art"),
     h("button", { class: "btn primary", onclick: () => commitExport() }, "export  ⬇"),
   );
   requestAnimationFrame(() => { restat(); reinfo(); showFiles(); redrawBack(0); });
@@ -2047,7 +2215,7 @@ function renderExport(screen, action) {
       const model = mesh.buildModel({ ...modelArgs(), bottomMm: withBack ? plan.depthMm : 0 });
       if (!model.parts.length) throw new Error("every filament band came out empty");
       if (withBack) {
-        const art = await backart.renderBack(mesh.modelGrid(modelArgs()), { ...backTexts(), pattern: back.pattern, seed: back.seed });
+        const art = await backart.renderBack(mesh.modelGrid(modelArgs()), backArtOpts(back));
         for (const part of backart.backParts(art, { depthMm: plan.depthMm, slot: plan.slot, baseSlot: s.filaments[0].slot })) {
           mesh.addMeshPart(model, part);
         }

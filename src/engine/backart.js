@@ -16,6 +16,7 @@
 import fontUrl from "../assets/fonts/JetBrainsMono-ExtraBold.woff?url";
 import { traceLoops, simplifyLoop, groupLoops, extrude } from "./outline.js";
 import { FIRST_LAYER_MM } from "./mesh.js";
+import { designCoverage } from "./lineart.js";
 
 export const BACK_DEFAULTS = {
   maker: "Bryce Fimreite",
@@ -66,7 +67,7 @@ export function loadBackFont() {
 // ---------------------------------------------------------------- helpers
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
-function hashString(s) {
+export function hashString(s) {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
   return h >>> 0;
@@ -215,7 +216,8 @@ function layoutBlock({ title, maker, email, brand }, s, measure) {
 
 /** The back as seen after turning the print over left-to-right.
  *  grid = mesh.modelGrid(...): { cols, rows, cell, inside, widthMm, heightMm }. */
-export async function renderBack(grid, { title, maker, email, brand, pattern = "topo", seed = 0, maxPixels = 3e6, minPx = 0.1 }) {
+export async function renderBack(grid, { title, maker, email, brand, pattern = "topo", design = "", seed = 0, weight = 1,
+                                         info = true, maxPixels = 3e6, minPx = 0.1 }) {
   const font = await loadBackFont();
   const { cols, rows, cell, inside, widthMm: W, heightMm: H } = grid;
   // pixels line up with the mesh cells (a whole number per cell, or cells per
@@ -286,27 +288,32 @@ export async function renderBack(grid, { title, maker, email, brand, pattern = "
   // about 56 x 32 mm on a 100 mm print, bigger on big prints; under goodScale only when nothing else fits
   const maxScale = Math.min(1.5, Math.max(BLOCK.goodScale, Math.min(W, H) / 90));
   let block = null, spot = null, scale = maxScale;
-  for (; scale >= BLOCK.minScale - 1e-9; scale -= 0.04) {
+  for (; info && scale >= BLOCK.minScale - 1e-9; scale -= 0.04) {
     block = layoutBlock(texts, scale, measure);
     spot = place(block);
     if (spot) break;
   }
-  const cramped = !spot;
-  if (!spot) {           // too small: centre it at the smallest size and let the outline crop it
+  const cramped = info && !spot;
+  if (cramped) {           // too small: centre it at the smallest size and let the outline crop it
     scale = BLOCK.minScale;
     block = layoutBlock(texts, scale, measure);
     spot = [Math.round((w - block.w / px) / 2), Math.round((h - block.h / px) / 2)];
   }
   // in a rectangle's corner the block's frame lands on the border, so they read as one line
-  const bx = spot[0] * px, by = spot[1] * px;
-  const blockRect = [bx, by, bx + block.w, by + block.h];
+  // no info block: a keep-out box far off the print, so nothing is kept clear
+  const blockRect = info ? [spot[0] * px, spot[1] * px, spot[0] * px + block.w, spot[1] * px + block.h] : [-1e9, -1e9, -1e9, -1e9];
 
   // field: border + topo, then the block on top
   const field = new Float32Array(w * h);
   const inner = LOOK.edge + LOOK.border + LOOK.gap;
   const keep = blockRect.map((v, i) => v + (i < 2 ? -LOOK.gap : LOOK.gap));
-  let topo = null, step = 1;
-  if (pattern === "topo") {
+  let topo = null, step = 1, cov = null, thinnest = Infinity;
+  if (pattern === "design") {
+    // a line-art design (engine/lineart.js), seeded like the topo lines
+    ({ cov, thinnest } = designCoverage(design, { w, h, px, widthMm: W, heightMm: H, weight,
+      seed: (seed >>> 0) || hashString(texts.title || "print") }));
+  } else if (pattern === "topo") {
+    thinnest = Math.min(...LOOK.lineWidths) * weight;
     const avoid = [(blockRect[0] + blockRect[2]) / 2, (blockRect[1] + blockRect[3]) / 2];
     // seed 0: the pattern follows the print's name (how it started); otherwise the one picked with "new pattern"
     const fn = topoField(W, H, (seed >>> 0) || hashString(texts.title || "print"), avoid);
@@ -321,7 +328,7 @@ export async function renderBack(grid, { title, maker, email, brand, pattern = "
     }
     gs.sort((a, b) => a - b);
     const g98 = gs.length ? gs[Math.floor(gs.length * 0.98)] : 1;
-    step = LOOK.spacing * g98;
+    step = LOOK.spacing * Math.max(1, weight) * g98;    // heavier lines need more room or they merge
   }
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
@@ -337,7 +344,7 @@ export async function renderBack(grid, { title, maker, email, brand, pattern = "
           const g = Math.hypot(gx, gy);
           if (g > 1e-9) {
             const t = topo[i] / step, n = Math.round(t);
-            const lw = LOOK.lineWidths[((n % 4) + 4) % 4];
+            const lw = LOOK.lineWidths[((n % 4) + 4) % 4] * weight;
             const along = Math.abs(t - n) * step / g;       // mm to the nearest level line
             let tc = clamp01((lw / 2 - along) / px + 0.5);
             tc *= clamp01((d - inner) / px + 0.5) * clamp01(out / px + 0.5);
@@ -345,9 +352,16 @@ export async function renderBack(grid, { title, maker, email, brand, pattern = "
           }
         }
       }
+      if (cov && cov[i] > 0 && d > inner - px) {
+        const mx = (x + 0.5) * px, my = (y + 0.5) * px;
+        const out = Math.max(keep[0] - mx, mx - keep[2], keep[1] - my, my - keep[3]);
+        const tc = cov[i] * clamp01((d - inner) / px + 0.5) * clamp01(out / px + 0.5);
+        if (tc > c) c = tc;
+      }
       field[i] = c;
     }
   }
+  if (!info) return { field, fp, w, h, px, widthMm: W, heightMm: H, scale: 1, cramped: false, small: false, thinnest };
   // the title block replaces whatever is under it
   const bwPx = Math.ceil(block.w / px) + 2, bhPx = Math.ceil(block.h / px) + 2;
   const canvas = document.createElement("canvas");
@@ -364,7 +378,7 @@ export async function renderBack(grid, { title, maker, email, brand, pattern = "
     const edgeFade = clamp01((dmm(i) - LOOK.edge) / px + 0.5);
     field[i] = (img[(y * bwPx + x) * 4 + 3] / 255) * edgeFade;
   }
-  return { field, fp, w, h, px, widthMm: W, heightMm: H, scale, cramped, small: scale < BLOCK.goodScale - 1e-9 };
+  return { field, fp, w, h, px, widthMm: W, heightMm: H, scale, cramped, small: scale < BLOCK.goodScale - 1e-9, thinnest };
 }
 
 /** A fresh pattern number for "new pattern" (never 0, which means "from the name"). */

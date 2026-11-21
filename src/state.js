@@ -2,9 +2,9 @@
 // so a project can move between the phone and the Mac later without a
 // translation layer. Fields the phone doesn't use yet are kept anyway.
 
-export const STAGES = ["prep", "solve", "export"];
-export const STAGE_LABELS = { prep: "Prep", solve: "Solve", export: "Export" };
-export const STAGE_REQUIRES = { prep: null, solve: "prep", export: "solve" };
+export const STAGES = ["prep", "solve", "back", "export"];
+export const STAGE_LABELS = { prep: "Prep", solve: "Solve", back: "Back", export: "Export" };
+export const STAGE_REQUIRES = { prep: null, solve: "prep", back: "solve", export: "back" };
 export const PENDING = "pending";
 export const COMPLETE = "complete";
 
@@ -71,7 +71,7 @@ export function defaultData(name) {
     created: now(),
     modified: now(),
     folder: "",
-    status: { prep: PENDING, solve: PENDING, export: PENDING },
+    status: { prep: PENDING, solve: PENDING, back: PENDING, export: PENDING },
     source: { filename: "", width_px: 0, height_px: 0 },
     prep: {
       crop: null, // [x, y, w, h] in source pixels (after rotate/flip)
@@ -105,8 +105,10 @@ export function defaultData(name) {
       formats: ["3mf"],
       last_export: null,
       price_per_kg: 25.0,
-      // art printed on the plate side (engine/backart.js); slot 0 = pick the most contrasting filament
-      back: { enabled: true, slot: 0, layers: 2, pattern: "topo", seed: 0 },   // seed 0 = pattern from the name
+      // art printed on the plate side (engine/backart.js), set on the Back stage; slot 0 = pick the most
+      // contrasting filament. pattern: topo (built-in topo lines) | design (a line-art design, by id) | plain.
+      // seed 0 = pattern from the name; weight = line-weight multiplier; info = the title block.
+      back: { enabled: true, slot: 0, layers: 2, pattern: "topo", design: "", seed: 0, weight: 1, info: true },
     },
   };
 }
@@ -135,6 +137,8 @@ export function sanitizeProject(raw) {
   out.group = folderPath(text(d.group, "", FOLDER_PATH_MAX));
   const st = obj(d.status);
   out.status = Object.fromEntries(STAGES.map((k) => [k, st[k] === COMPLETE ? COMPLETE : PENDING]));
+  // projects from before the Back stage chose their back art on Export: a solved one has done "Back"
+  if (!("back" in st) && st.solve === COMPLETE) out.status.back = COMPLETE;
   out.source = { ...base.source, ...obj(d.source) };
   out.source.filename = text(out.source.filename, "", 200);
 
@@ -195,8 +199,10 @@ export function sanitizeProject(raw) {
                  formats: Array.isArray(ex.formats) ? ex.formats.filter((f) => f === "3mf" || f === "stl") : ["3mf"] };
   const bk = obj(ex.back);
   out.export.back = { enabled: bk.enabled !== false, slot: Math.round(num(bk.slot, 0, 0, 8)),
-                      layers: Math.round(num(bk.layers, 2, 1, 3)), pattern: pick(bk.pattern, ["topo", "plain"], "topo"),
-                      seed: Math.round(num(bk.seed, 0, 0, 4294967295)) };
+                      layers: Math.round(num(bk.layers, 2, 1, 3)), pattern: pick(bk.pattern, ["topo", "plain", "design"], "topo"),
+                      design: text(bk.design, "", 40).replace(/[^a-z0-9_-]/gi, ""),
+                      seed: Math.round(num(bk.seed, 0, 0, 4294967295)),
+                      weight: +num(bk.weight, 1, 0.6, 2.2).toFixed(2), info: bk.info !== false };
   return out;
 }
 

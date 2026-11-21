@@ -1,13 +1,13 @@
 # HueLite Mobile
 
 Phone version of HueLite. Plain JS + Vite, wrapped with Capacitor.
-Prep → Solve → Export all run on the phone, with no server.
+Prep → Solve → Back → Export all run on the phone, with no server.
 
 ## Status
 
 | Part | State |
 |---|---|
-| App shell: Prep → Solve → Export stepper, stage locking, dark theme | done |
+| App shell: Prep → Solve → Back → Export stepper, stage locking, dark theme | done |
 | Wide layout for unfolded phones / tablets (preview left, controls right) | done |
 | Photo picker (library/camera), EXIF-aware, capped at 4096px for iOS canvas limits | done |
 | Touch crop: drag/resize, Free / 1:1 / 4:5 / 3:2, rotate, flip | done |
@@ -21,6 +21,7 @@ Prep → Solve → Export all run on the phone, with no server.
 | Export: Bambu 3MF + STL + slot note, cost/purge estimate, share sheet or download | done |
 | Opens in Bambu Studio with the right filaments, colours and 0.08 mm layers (A1) | done |
 | Back art: topo lines + Print-Brick info block printed on the plate side, mirrored | done |
+| Back stage: gallery of 40 line-art designs, reseed, line weight, info block on/off | done |
 | Prep adjustments, presets, suggest for print (pixel-identical to the desktop) | done |
 | Saving projects between launches (IndexedDB), project list | done |
 | Folders inside folders on the project list ("Christmas/Smith family") | done |
@@ -126,6 +127,30 @@ when STL is on and the file would pass ~60 MB (50 bytes a triangle). A very
 detailed photo on fine detail can reach 5 million triangles.
 
 ### Back art
+
+**The Back stage (03).** Back art is set on its own stage between Solve and
+Export. A gallery strip offers *border only*, the built-in topo lines, and the
+40 designs from `backplate-art/` (Print-Brick back-plate generator, used as
+dropped in; tabs: all / original / printer / faith). Under it: `↻ new pattern`
+/ `↶ previous` / `from name` (the seed, shared by every design), a line-weight
+slider (0.6-2.2×), border + info block or border only, colour slot and
+thickness. The preview shows the back turned over, with the thinnest line in
+mm: under 0.4 mm is below the nozzle, under 0.6 mm (what the card tests held)
+is a warning. Export keeps the `back` view and the 3D turn-over, plus a
+summary and "change the back art".
+
+- `engine/lineart.js` wraps the generator. A design keeps its real mm line
+  widths, is centred and clipped to the print's outline, and scales up only
+  when the print is over 200 mm (so lines only get thicker). It is drawn on a
+  canvas at the back-art resolution and read back as coverage; `renderBack`
+  keeps it clear of the border and the info block, then the rest of the
+  pipeline (trace, extrude, mirror) is unchanged.
+- Stored in `export.back`: `pattern` (`topo` | `design` | `plain`), `design`
+  (the generator's id), `seed`, `weight`, `info`. Projects from before the
+  stage open with Back already done (their back was chosen on Export).
+- The stage accent is lilac `#B7A6D9` / plum `#4E4275`; the stage chimes are
+  now C5 E5 G5 C6 (Export moved up to C6).
+
 
 Export can print art on the plate side, in the first 1-3 layers, in a second
 filament: an inset border following the outline, topographic lines (seeded
