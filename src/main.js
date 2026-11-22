@@ -1782,7 +1782,23 @@ function renderBackStage(screen, action) {
       note.textContent = backNotes(back, plan, art).join(" ");
     }, delay);
   };
-  const changed = (delay) => { touched(); redraw(delay); };
+  // ---- the front, when there is an art border: its band carries the same design
+  const ab = artBorderSettings();
+  const frontCanvas = h("canvas", { class: "preview-out", hidden: true });
+  const frontNote = h("p", { class: "meta", hidden: true });
+  let frontTimer = 0;
+  const redrawFront = (delay = 120) => {
+    clearTimeout(frontTimer);
+    if (!ab.enabled) return;
+    frontTimer = setTimeout(() => {
+      if (!frontCanvas.isConnected) return;
+      const img = frontPreview(back);
+      frontCanvas.width = img.width; frontCanvas.height = img.height;
+      frontCanvas.getContext("2d").putImageData(img, 0, 0);
+      frontNote.textContent = artBorderNotes(back, artBorderPlan()).join(" ");
+    }, delay);
+  };
+  const changed = (delay) => { touched(); redraw(delay); redrawFront(delay); };
 
   // ---- gallery: "border only", then every design (the generator's topo tile is the built-in topo lines)
   const tiles = [
@@ -1890,10 +1906,51 @@ function renderBackStage(screen, action) {
   const fil = s.filaments;
   const slotOpts = [{ key: 0, label: "auto" }, ...fil.slice(1).map((f) => ({ key: f.slot,
     label: h("span", { class: "chip-sw" }, h("i", { style: `background:${f.hex}` }), `slot ${f.slot}`) }))];
-  const setOff = () => screen.classList.toggle("art-off", !back.enabled);
+  // the design gallery stays live while the art border uses it, even with a plain back
+  const setOff = () => screen.classList.toggle("art-off", !back.enabled && !ab.enabled);
+
+  // ---- art border
+  const VIEWS = ["back", "front"];
+  let side = "back";
+  const viewFrame = frame("back, turned over", canvas, frontCanvas);
+  const caption = viewFrame.querySelector(".frame-caption");
+  const viewChips = chipGroup([{ key: "back", label: "back" }, { key: "front", label: "front · art border" }], side,
+    (k) => { side = k; showSide(); });
+  viewChips.classList.add("side-chips");
+  const showSide = () => {
+    if (!ab.enabled) side = "back";
+    viewChips.hidden = !ab.enabled;
+    viewChips.querySelectorAll(".chip").forEach((c, i) => c.classList.toggle("on", VIEWS[i] === side));
+    canvas.hidden = side !== "back"; note.hidden = side !== "back";
+    frontCanvas.hidden = side !== "front"; frontNote.hidden = side !== "front";
+    if (caption) caption.textContent = side === "front" ? "front, art border" : "back, turned over";
+  };
+  const rimMm = rimWidthMm();
+  const widthMin = Math.max(1.5, Math.ceil(rimMm * 2) / 2);
+  ab.width_mm = Math.max(widthMin, ab.width_mm);
+  const abCtrls = h("div", { class: "ab-ctrls" },
+    optGrid([{ key: "inlay", label: h("span", { class: "two-line" }, h("b", {}, "inlaid"), h("span", {}, "flush, two colours")) },
+      { key: "raised", label: h("span", { class: "two-line" }, h("b", {}, "raised"), h("span", {}, "the lines stand up")) }],
+    ab.style, (k) => { ab.style = k; changed(0); }, 2),
+    rangeField("width", ab.width_mm, { min: widthMin, max: 12, step: 0.5, fmt: (v) => `${(+v).toFixed(1)} mm`,
+      oninput: (v) => { ab.width_mm = v; changed(150); } }),
+    rangeField("height", Math.round(ab.height * 100), { min: 20, max: 100, step: 5, fmt: (v) => `${v}% of the print`,
+      oninput: (v) => { ab.height = v / 100; changed(150); } }),
+    h("p", { class: "meta hint" }, rimMm
+      ? `takes the place of the ${rimMm} mm rim, so it is at least that wide. the pattern is the design and colour picked above.`
+      : "the pattern is the design and colour picked above."));
+  abCtrls.hidden = !ab.enabled;
+  const abCheck = h("label", { class: "check-row" },
+    h("input", { type: "checkbox", checked: ab.enabled, onchange: (e) => {
+      ab.enabled = e.target.checked;
+      abCtrls.hidden = !ab.enabled;
+      side = ab.enabled ? "front" : "back";
+      showSide(); setOff(); changed(0);
+    } }),
+    h("span", {}, "Include Art Border"));
 
   screen.append(
-    pane("view", frame("back, turned over", canvas), h("div", { class: "below-view" }, lineCheck, note)),
+    pane("view", viewChips, viewFrame, h("div", { class: "below-view" }, lineCheck, note, frontNote)),
     pane("ctrl",
       head("art on the back"),
       optGrid([{ key: "on", label: "line art" }, { key: "off", label: "plain back" }], back.enabled ? "on" : "off",
@@ -1916,8 +1973,13 @@ function renderBackStage(screen, action) {
       head("thickness"),
       optGrid([1, 2, 3].map((n) => ({ key: n, label: h("span", { class: "two-line" },
         h("b", {}, `${n} layer${n > 1 ? "s" : ""}`), h("span", {}, `${backart.backDepthMm(n, lh).toFixed(2)} mm`)) })),
-      back.layers, (k) => { back.layers = k; changed(0); }, 3)),
+      back.layers, (k) => { back.layers = k; changed(0); }, 3),
+      head("art border"),
+      abCheck,
+      abCtrls),
   );
+  abCheck.closest(".group")?.classList.add("keep");
+  showSide();
   setOff();
   showTab();
   paintPick();
@@ -1933,6 +1995,7 @@ function renderBackStage(screen, action) {
   );
   requestAnimationFrame(() => {
     redraw(0);
+    redrawFront(0);
     drawThumbs(60);
     // bring the picked design into view in the gallery strip (sideways only; the page stays put)
     const on = root.querySelector(".art-tile.on:not([hidden])"), strip = on?.parentElement;
@@ -1944,8 +2007,128 @@ function renderBackStage(screen, action) {
 function modelArgs() {
   const { s, lh, baseLayers, mm } = solveSettings();
   const { heights, w, h: hh } = app.solved;
+  const ab = artBorderPlan();
   return { heights, w, h: hh, mask: app.prepped.mask, physicalW: mm, layerH: lh, baseLayers,
-           filaments: s.filaments, detail: exportOpts.detail, name: app.project.name };
+           filaments: s.filaments, detail: exportOpts.detail, name: app.project.name,
+           ring: ab ? { widthMm: ab.widthMm, layers: ab.bodyLayers } : null };
+}
+
+// ---- art border: a band round the print in place of the rim, about half its height, with the
+// back's design on its top face: inlaid flush in the back-art filament, or standing up from it
+const ART_RELIEF_MM = 0.4;      // how deep the inlay goes / how far raised lines stand up
+
+/** The project's art border settings, with defaults filled in for older projects. */
+function artBorderSettings() {
+  const ex = app.project.export;
+  ex.art_border = withDefaults(ex.art_border, { enabled: false, style: "inlay", width_mm: 4, height: 0.5 });
+  return ex.art_border;
+}
+
+/** The rim the art border replaces: its width in mm (0 when there is none). */
+const rimWidthMm = () => {
+  const b = app.project.solve.border || {};
+  return (b.mode || "raised") !== "none" ? (b.width_mm ?? 3) : 0;
+};
+
+const tallestCache = new WeakMap();
+/** The tallest column of the solved print, in colour layers above the base. */
+function tallestLayer() {
+  const sv = app.solved;
+  let t = tallestCache.get(sv);
+  if (t === undefined) {
+    t = 0;
+    const { heights } = sv, mask = app.prepped?.mask;
+    for (let i = 0; i < heights.length; i++) if ((!mask || mask[i]) && heights[i] > t) t = heights[i];
+    tallestCache.set(sv, t);
+  }
+  return t;
+}
+
+/** How the art border is built, or null when it is off. Heights are in
+ *  colour layers above the base, like the solved heights. */
+function artBorderPlan() {
+  const ab = artBorderSettings();
+  if (!ab.enabled || !app.solved) return null;
+  const { s, lh, baseLayers } = solveSettings();
+  const back = backSettings(), bp = backPlan(back);
+  const patterned = back.pattern !== "plain" && bp.usable;
+  const inlay = ab.style !== "raised";
+  const baseMm = mesh.snappedBaseMm(baseLayers, lh);
+  const relief = Math.max(2, Math.round(ART_RELIEF_MM / lh));
+  const tallest = tallestLayer();
+  const printMm = baseMm + tallest * lh;
+  // an inlay needs room for its depth above the base
+  const minTop = inlay && patterned ? relief : 0;
+  const want = Math.round((ab.height * printMm - baseMm) / lh);
+  const top = Math.max(minTop, Math.min(want, Math.max(minTop, tallest)));
+  const topMm = baseMm + top * lh, reliefMm = relief * lh;
+  const bands = mesh.bandBounds(s.filaments);
+  const topBand = bands.find((b) => top > b.start_h && top <= b.end_h) || bands[0];
+  return {
+    inlay, patterned, top, topMm, printMm, relief, reliefMm,
+    widthMm: Math.max(ab.width_mm, rimWidthMm()),
+    // the columns stop under an inlay; the pattern and the rest of the top fill in above them
+    bodyLayers: inlay && patterned ? top - relief : top,
+    z0: inlay ? topMm - reliefMm : topMm, z1: inlay ? topMm : topMm + reliefMm,
+    slot: patterned ? bp.slot : null, hex: bp.hex,
+    restSlot: topBand?.slot ?? s.filaments[0].slot,
+    low: want < minTop,
+  };
+}
+
+const ringHeights = { src: null, key: "", heights: null };
+/** The solved heights with the art border's band in place (for previews and
+ *  estimates; the export builds the band on the mesh grid instead). */
+function previewHeights() {
+  const ab = artBorderPlan();
+  const { heights, w, h: hh, lut } = app.solved;
+  if (!ab) return heights;
+  const mm = app.project.prep.physical_width_mm, mask = app.prepped.mask;
+  const widthPx = Math.max(1, Math.round(ab.widthMm * w / mm));
+  const key = `${widthPx}|${ab.top}`;
+  if (ringHeights.src !== app.solved || ringHeights.key !== key) {
+    const out = solve.applyBorder(heights, w, hh, { widthPx, mode: "raised", rimLayers: ab.top, maxLayers: lut.length - 1, mask });
+    Object.assign(ringHeights, { src: app.solved, key, heights: solve.applyMask(out, mask) });
+  }
+  return ringHeights.heights;
+}
+
+/** The print from the front, flat colours, with the art border's pattern painted on its band. */
+function frontPreview(back) {
+  const { lh, baseLayers, mm } = solveSettings();
+  const { w, h: hh, lut } = app.solved;
+  const mask = app.prepped.mask;
+  const img = mesh.renderTop({ heights: previewHeights(), w, h: hh, lut, mask, layerH: lh,
+    baseMm: baseLayers * lh, cellMm: mm / w, shaded: false });
+  const ab = artBorderPlan();
+  if (!ab?.patterned) return img;
+  // the pattern at no more than about a megapixel, sampled back up
+  const k = Math.max(1, Math.ceil(Math.sqrt(w * hh / 1e6))), px = mm / w;
+  const cw = Math.ceil(w / k), ch = Math.ceil(hh / k);
+  const { cov } = backart.patternCoverage(back.pattern, { w: cw, h: ch, px: px * k, widthMm: cw * k * px, heightMm: ch * k * px,
+    design: back.design, seed: back.seed, weight: back.weight ?? 1, title: app.project.name });
+  const all = mask || new Uint8Array(w * hh).fill(1);
+  const band = shape.rim(all, w, hh, Math.max(1, Math.round(ab.widthMm / px)));
+  const ink = hexToRgb(ab.hex), d = img.data;
+  for (let y = 0; y < hh; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x;
+    if (!band[i] || cov[Math.floor(y / k) * cw + Math.floor(x / k)] < 0.5) continue;
+    d[i * 4] = ink[0]; d[i * 4 + 1] = ink[1]; d[i * 4 + 2] = ink[2];
+  }
+  return img;
+}
+
+/** What to tell the user about the art border (Back and Export share it). */
+function artBorderNotes(back, ab) {
+  if (!ab) return [];
+  const notes = [`${ab.widthMm.toFixed(1)} mm wide, ${ab.topMm.toFixed(2)} mm tall (the print is ${ab.printMm.toFixed(2)} mm), in place of the rim.`];
+  if (back.pattern === "plain") notes.push("\"Border only\" has no pattern, so the art border prints plain: pick a design for it.");
+  else if (!ab.patterned) notes.push("the pattern needs a second filament: add one in Solve.");
+  else notes.push(ab.inlay
+    ? `pattern inlaid flush in slot ${ab.slot}, ${ab.reliefMm.toFixed(2)} mm deep.`
+    : `pattern raised ${ab.reliefMm.toFixed(2)} mm in slot ${ab.slot}.`);
+  if (ab.low) notes.push(`raised to ${ab.topMm.toFixed(2)} mm, the least that holds the inlay.`);
+  return notes;
 }
 
 /** The maker's details on the back art; kept per phone, not per project. */
@@ -1977,10 +2160,18 @@ function backPlan(back) {
            thin: depthMm > baseMm - lh + 1e-6 };
 }
 
+/** obj (made if missing) with any absent keys taken from defaults, keeping its identity. */
+function withDefaults(obj, defaults) {
+  const o = obj && typeof obj === "object" ? obj : {};
+  for (const [k, v] of Object.entries(defaults)) if (!(k in o)) o[k] = v;
+  return o;
+}
+
 /** The project's back settings, with defaults filled in for older projects. */
 function backSettings() {
   const ex = app.project.export;
-  ex.back = { enabled: true, slot: 0, layers: 2, pattern: "topo", design: "", seed: 0, weight: 1, info: true, ...(ex.back || {}) };
+  // filled in place: the stages hold on to this object and change it as you go
+  ex.back = withDefaults(ex.back, { enabled: true, slot: 0, layers: 2, pattern: "topo", design: "", seed: 0, weight: 1, info: true });
   if (ex.back.pattern === "design" && !lineart.designById(ex.back.design)) ex.back.pattern = "topo";
   return ex.back;
 }
@@ -2014,13 +2205,14 @@ function renderExport(screen, action) {
     return;
   }
   const { s, lh, baseLayers, mm } = solveSettings();
-  const { heights, w, h: hh, lut } = app.solved;
+  const { w, h: hh, lut } = app.solved;
+  const heights = previewHeights();      // with the art border's band, when there is one
   const mask = app.prepped.mask;
   const ex = app.project.export;
+  const back = backSettings();
 
-  // flat colours: a top-down view should show exactly what each tone is
-  const top = canvasOf(mesh.renderTop({ heights, w, h: hh, lut, mask, layerH: lh,
-    baseMm: baseLayers * lh, cellMm: mm / w, shaded: false }));
+  // flat colours: a top-down view should show exactly what each tone is (and the art border's pattern)
+  const top = canvasOf(frontPreview(back));
   top.className = "preview-out";
   let oblique;
   const gl3 = createView3D({ fullscreen: true });   // full screen only here, at the end
@@ -2036,7 +2228,6 @@ function renderExport(screen, action) {
 
   const stats = h("p", { class: "meta" }, "…");
   const warn = h("div", { class: "warn-box", hidden: true });
-  const back = backSettings();
 
   // problems that ruin a print or a phone: shown big, under the preview
   const restat = () => {
@@ -2084,9 +2275,12 @@ function renderExport(screen, action) {
   const info = h("div");
   const reinfo = () => {
     const plan = backPlan(back);
+    const ab = artBorderPlan();
     const est = mesh.estimates({ heights, w, h: hh, mask, filaments: s.filaments, layerH: lh,
       baseLayers, physicalW: mm, pricePerKg: ex.price_per_kg ?? 25, bandMode: s.band_mode,
-      back: back.enabled && plan.usable ? { slot: plan.slot, layers: plan.layers } : null });
+      back: back.enabled && plan.usable ? { slot: plan.slot, layers: plan.layers } : null,
+      // the art border's pattern: its own layers swap to the art filament and back
+      extraSwitches: ab?.patterned ? ab.relief + 1 : 0 });
     const [fw, fd] = est.footprint_mm;
     stats.textContent = `${fw.toFixed(0)} × ${fd.toFixed(0)} mm · ${est.max_height_mm.toFixed(1)} mm tall · ` +
       `${est.total_grams.toFixed(0)} g · $${est.total_cost.toFixed(2)}`;
@@ -2124,6 +2318,7 @@ function renderExport(screen, action) {
 
   // the back art is set on the Back stage; here it is a summary and a way back
   const plan0 = backPlan(back);
+  const ab0 = artBorderPlan();
   const backCard = h("div", { class: `back-card${back.enabled ? "" : " off"}` },
     h("p", { class: "back-sum" }, back.enabled
       ? [backArtName(back), back.pattern !== "plain" && `${(back.weight ?? 1).toFixed(2)}× lines`,
@@ -2131,6 +2326,8 @@ function renderExport(screen, action) {
          `${plan0.layers} layer${plan0.layers > 1 ? "s" : ""}`].filter(Boolean).join(" · ")
       : "plain: no art on the plate side"),
     backNote,
+    ab0 && h("p", { class: "back-sum" }, `art border · ${ab0.inlay ? "inlaid" : "raised"} · ${ab0.widthMm.toFixed(1)} mm wide · ` +
+      `${ab0.topMm.toFixed(2)} mm tall${ab0.patterned ? ` · slot ${ab0.slot}` : " · plain"}`),
     h("button", { class: "btn wide gap-top", type: "button", onclick: () => go("back") }, "‹ change the back art"));
 
   // both previews when there is height for them, otherwise one at a time
@@ -2209,6 +2406,7 @@ function renderExport(screen, action) {
     const stem = (app.project.name || "huelite").replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "huelite";
     const plan = backPlan(back);
     const withBack = back.enabled && plan.usable;
+    const ring = artBorderPlan();
     const files = await busy("building files…", async () => {
       // with back art the columns start above it, and two parts fill the first layers:
       // the base with the art cut out, and the art (the same parts go in the 3MF and the STL)
@@ -2220,13 +2418,20 @@ function renderExport(screen, action) {
           mesh.addMeshPart(model, part);
         }
       }
+      if (ring?.patterned) {
+        // the pattern on the band's top face, over the columns modelArgs() stopped short (inlay) or under it (raised)
+        const art = backart.renderRingTop(mesh.modelGrid(modelArgs()), { pattern: back.pattern, design: back.design,
+          seed: back.seed, weight: back.weight ?? 1, title: app.project.name });
+        for (const part of backart.ringParts(art, { z0: ring.z0, z1: ring.z1, slot: ring.slot,
+          restSlot: ring.inlay ? ring.restSlot : null })) mesh.addMeshPart(model, part);
+      }
       const out = [];
       if (formats.includes("3mf")) {
         out.push(new File([await bambu3mf.make3mf(model,
           { colours: s.filaments.map((f) => f.hex), layerHeight: lh })], `${stem}.3mf`, { type: "model/3mf" }));
       }
       if (formats.includes("stl")) out.push(new File([bambu3mf.makeStl(model)], `${stem}.stl`, { type: "model/stl" }));
-      out.push(new File([bambu3mf.slotNote(s.filaments, { layerHeight: lh, back: withBack ? plan : null })],
+      out.push(new File([bambu3mf.slotNote(s.filaments, { layerHeight: lh, back: withBack ? plan : null, ring })],
         `${stem}-filament-slots.txt`, { type: "text/plain" }));
       return out;
     }, { quiet: true }).catch((err) => { toast(`Export failed: ${err.message}`, 3000); return null; });
@@ -2237,7 +2442,8 @@ function renderExport(screen, action) {
     ex.formats = formats;
     ex.last_export = { time: new Date().toISOString().slice(0, 19), detail: exportOpts.detail,
                        plate: "A1", name: app.project.name, files: files.map((f) => f.name),
-                       back: withBack ? { slot: plan.slot, layers: plan.layers } : null };
+                       back: withBack ? { slot: plan.slot, layers: plan.layers } : null,
+                       art_border: ring ? { style: ring.inlay ? "inlay" : "raised", width_mm: ring.widthMm, top_mm: ring.topMm } : null };
     setStatus("export", COMPLETE);
     await persistNow();               // the click's own save ran before the export finished
     refreshStepper();

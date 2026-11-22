@@ -22,6 +22,7 @@ Prep → Solve → Back → Export all run on the phone, with no server.
 | Opens in Bambu Studio with the right filaments, colours and 0.08 mm layers (A1) | done |
 | Back art: topo lines + Print-Brick info block printed on the plate side, mirrored | done |
 | Back stage: gallery of 40 line-art designs, reseed, line weight, info block on/off | done |
+| Art border: a band in place of the rim, ~half height, the back's design inlaid or raised on its top | done |
 | Prep adjustments, presets, suggest for print (pixel-identical to the desktop) | done |
 | Saving projects between launches (IndexedDB), project list | done |
 | Folders inside folders on the project list ("Christmas/Smith family") | done |
@@ -150,6 +151,22 @@ summary and "change the back art".
   stage open with Back already done (their back was chosen on Export).
 - The stage accent is lilac `#B7A6D9` / plum `#4E4275`; the stage chimes are
   now C5 E5 G5 C6 (Export moved up to C6).
+
+**Art border.** "Include Art Border" on the Back stage swaps the rim for a band
+round the outline (at least the rim's width, 4 mm by default) at a set share of
+the print's height (half by default), with the chosen design on its top face,
+seen from the front (not mirrored), in the back-art colour. *Inlaid*: the
+band's columns stop 0.4 mm short and two parts fill the top flush, the pattern
+and the rest (in the band filament at that height). *Raised*: the pattern stands
+0.4 mm proud of the band. The band's body is ordinary columns, so it takes the
+band colours like the rim did and adds no colour swaps of its own. A "front"
+view on the Back stage and Export's top-down view show it.
+
+- `mesh.modelGrid({ ring })` sets the ring cells; `backart.renderRingTop` and
+  `ringParts` make the pattern parts on the same cells. `patternCoverage` is
+  the shared front-facing pattern raster.
+- Stored in `export.art_border`: `enabled`, `style` (`inlay` | `raised`),
+  `width_mm`, `height` (fraction of the print's tallest point).
 
 
 Export can print art on the plate side, in the first 1-3 layers, in a second

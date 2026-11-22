@@ -738,7 +738,11 @@ html[data-side="1"] .art-grid { grid-template-rows: repeat(3, auto); }
 .art-pick b { color: var(--accent); }
 .art-pick .art-group { color: var(--muted); font-size: 11px; }
 .art-pick .meta { margin: 4px 0 0; }
-.art-off .ctrl-inner > .group:not(:first-child) { opacity: .4; pointer-events: none; }
+.art-off .ctrl-inner > .group:not(:first-child):not(.keep) { opacity: .4; pointer-events: none; }
+.side-chips { margin-bottom: 6px; }
+.check-row { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: 14px; color: var(--text); cursor: pointer; }
+.check-row input { width: 22px; height: 22px; margin: 0; accent-color: var(--accent); }
+.ab-ctrls { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
 .line-check { margin: 6px 0 0; font-size: 12px; padding: 6px 8px; border: 1px solid var(--line); }
 .line-check.ok { color: var(--sage, #8fc796); }
 .line-check.warn { color: #dacfb4; border-color: #8a6a3e; }

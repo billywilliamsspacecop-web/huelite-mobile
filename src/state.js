@@ -109,6 +109,9 @@ export function defaultData(name) {
       // contrasting filament. pattern: topo (built-in topo lines) | design (a line-art design, by id) | plain.
       // seed 0 = pattern from the name; weight = line-weight multiplier; info = the title block.
       back: { enabled: true, slot: 0, layers: 2, pattern: "topo", design: "", seed: 0, weight: 1, info: true },
+      // a band round the print in place of the rim, with the back's design on its top face (set on the Back
+      // stage). style: inlay (flush, two colours) | raised (the lines stand up). height = fraction of the print's.
+      art_border: { enabled: false, style: "inlay", width_mm: 4, height: 0.5 },
     },
   };
 }
@@ -203,6 +206,9 @@ export function sanitizeProject(raw) {
                       design: text(bk.design, "", 40).replace(/[^a-z0-9_-]/gi, ""),
                       seed: Math.round(num(bk.seed, 0, 0, 4294967295)),
                       weight: +num(bk.weight, 1, 0.6, 2.2).toFixed(2), info: bk.info !== false };
+  const ab = obj(ex.art_border);
+  out.export.art_border = { enabled: ab.enabled === true, style: pick(ab.style, ["inlay", "raised"], "inlay"),
+                            width_mm: +num(ab.width_mm, 4, 1, 15).toFixed(1), height: +num(ab.height, 0.5, 0.1, 1).toFixed(2) };
   return out;
 }
 

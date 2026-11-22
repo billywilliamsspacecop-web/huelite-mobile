@@ -417,24 +417,96 @@ export const backDepthMm = (layers, layerH) => FIRST_LAYER_MM + Math.max(0, laye
  *  above them, so nothing overlaps and the same geometry works in a 3MF and
  *  in a one-colour STL. */
 export function backParts(art, { depthMm, slot, baseSlot }) {
-  const { px, widthMm: W, heightMm: H, w, h, field, fp } = art;
+  const { px, widthMm: W, heightMm: H } = art;
   // traced points are in pixel-edge units (pixel i spans i..i+1), so x * px is mm from the left
-  const toModel = (x, y) => [W / 2 - x * px, H / 2 - y * px];
-  const solid = (f, minArea) => {
-    const loops = traceLoops(f, w, h).map((l) => simplifyLoop(l, 0.25));   // eps in pixels
-    return extrude(groupLoops(loops, minArea / (px * px)), 0, depthMm, toModel);
-  };
-  // drop specks from the art first, so the base fills where they were
-  const loops = traceLoops(field, w, h).map((l) => simplifyLoop(l, 0.25));
-  const artPolys = groupLoops(loops, LOOK.minPiece / (px * px));
-  const artMesh = extrude(artPolys, 0, depthMm, toModel);
-  const kept = rasterKeep(artPolys, field, w, h);
-  const rest = new Float32Array(w * h);
-  for (let i = 0; i < rest.length; i++) rest[i] = fp[i] ? 1 - kept[i] : 0;
+  const { artMesh, restMesh } = splitParts(art, (x, y) => [W / 2 - x * px, H / 2 - y * px], 0, depthMm, true);
   return [
-    { name: "Base, first layers", extruder: baseSlot, mesh: solid(rest, 0.01) },
+    { name: "Base, first layers", extruder: baseSlot, mesh: restMesh },
     { name: "Back art", extruder: slot, mesh: artMesh },
   ];
+}
+
+/** The art (field >= 0.5) and, with rest, the footprint (fp) minus the art,
+ *  each extruded z0..z1. Specks are dropped from the art first, so the rest
+ *  fills where they were. */
+function splitParts(art, toModel, z0, z1, rest) {
+  const { px, w, h, field, fp } = art;
+  const loops = traceLoops(field, w, h).map((l) => simplifyLoop(l, 0.25));   // eps in pixels
+  const artPolys = groupLoops(loops, LOOK.minPiece / (px * px));
+  const artMesh = extrude(artPolys, z0, z1, toModel);
+  if (!rest) return { artMesh, restMesh: null };
+  const kept = rasterKeep(artPolys, field, w, h);
+  const left = new Float32Array(w * h);
+  for (let i = 0; i < left.length; i++) left[i] = fp[i] ? 1 - kept[i] : 0;
+  const restLoops = traceLoops(left, w, h).map((l) => simplifyLoop(l, 0.25));
+  return { artMesh, restMesh: extrude(groupLoops(restLoops, 0.01 / (px * px)), z0, z1, toModel) };
+}
+
+// ---------------------------------------------------------------- art border
+// A band round the print (in place of the rim) with the back's design on its
+// top face, seen from the front, so it is not mirrored.
+
+/** A pattern's line coverage (0..1, 1 = ink) on a w x h grid of px-mm pixels
+ *  covering widthMm x heightMm, as seen from the front. Returns { cov, thinnest }. */
+export function patternCoverage(pattern, { w, h, px, widthMm: W, heightMm: H, design = "", seed = 0, weight = 1, title = "" }) {
+  const s = (seed >>> 0) || hashString(title || "print");
+  if (pattern === "design") return designCoverage(design, { w, h, px, widthMm: W, heightMm: H, weight, seed: s });
+  const cov = new Float32Array(w * h);
+  if (pattern !== "topo") return { cov, thinnest: Infinity };
+  // the same contour lines as the back, without the title block to avoid
+  const fn = topoField(W, H, s, null);
+  const topo = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) topo[y * w + x] = fn((x + 0.5) * px, (y + 0.5) * px);
+  const gs = [];
+  for (let y = 1; y < h - 1; y += 3) for (let x = 1; x < w - 1; x += 3) {
+    const i = y * w + x;
+    gs.push(Math.hypot(topo[i + 1] - topo[i - 1], topo[i + w] - topo[i - w]) / (2 * px));
+  }
+  gs.sort((a, b) => a - b);
+  const g98 = gs.length ? gs[Math.floor(gs.length * 0.98)] : 1;
+  const step = LOOK.spacing * Math.max(1, weight) * g98;
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    const i = y * w + x;
+    const g = Math.hypot((topo[i + 1] - topo[i - 1]) / (2 * px), (topo[i + w] - topo[i - w]) / (2 * px));
+    if (g <= 1e-9) continue;
+    const t = topo[i] / step, n = Math.round(t);
+    const lw = LOOK.lineWidths[((n % 4) + 4) % 4] * weight;
+    cov[i] = clamp01((lw / 2 - Math.abs(t - n) * step / g) / px + 0.5);
+  }
+  return { cov, thinnest: Math.min(...LOOK.lineWidths) * weight };
+}
+
+/** The art border's top face: the pattern clipped to the ring cells of
+ *  grid = mesh.modelGrid({ ..., ring }). Pixels split the cells evenly so
+ *  the parts meet the columns exactly. */
+export function renderRingTop(grid, { pattern, design = "", seed = 0, weight = 1, title = "", maxPixels = 3e6, minPx = 0.1 }) {
+  const { cols, rows, cell, ring, widthMm: W, heightMm: H } = grid;
+  const want = Math.max(minPx, Math.sqrt(W * H / maxPixels));
+  const px = cell / Math.max(1, Math.ceil(cell / want - 1e-9));
+  const w = Math.round(W / px), h = Math.round(H / px);
+  const fp = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const row = Math.min(rows - 1, Math.floor((y + 0.5) * px / cell));
+    for (let x = 0; x < w; x++) {
+      const col = Math.min(cols - 1, Math.floor((x + 0.5) * px / cell));
+      fp[y * w + x] = ring && ring[row * cols + col] ? 1 : 0;
+    }
+  }
+  const { cov, thinnest } = patternCoverage(pattern, { w, h, px, widthMm: W, heightMm: H, design, seed, weight, title });
+  const field = new Float32Array(w * h);
+  for (let i = 0; i < field.length; i++) field[i] = fp[i] ? cov[i] : 0;
+  return { field, fp, w, h, px, widthMm: W, heightMm: H, thinnest };
+}
+
+/** Mesh parts for the art border's pattern, z0..z1 in model mm. Inlaid
+ *  (restSlot given): the pattern and the rest of the ring's top, which fit
+ *  together. Raised: the pattern alone, standing on the ring. */
+export function ringParts(art, { z0, z1, slot, restSlot = null }) {
+  const { px, widthMm: W, heightMm: H } = art;
+  const { artMesh, restMesh } = splitParts(art, (x, y) => [x * px - W / 2, H / 2 - y * px], z0, z1, restSlot != null);
+  const parts = [{ name: "Art border pattern", extruder: slot, mesh: artMesh }];
+  if (restMesh) parts.unshift({ name: "Art border top", extruder: restSlot, mesh: restMesh });
+  return parts.filter((p) => p.mesh.triangles.length);
 }
 
 /** The art field with dropped specks zeroed: a pixel keeps its value only if

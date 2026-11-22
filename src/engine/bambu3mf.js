@@ -310,7 +310,7 @@ export function makeStl(model) {
   return new Blob([buf], { type: "model/stl" });
 }
 
-export function slotNote(filaments, { layerHeight = 0.08, back = null } = {}) {
+export function slotNote(filaments, { layerHeight = 0.08, back = null, ring = null } = {}) {
   const lines = ["HueLite -- filament slots for this print", ""];
   filaments.forEach((f, i) => {
     const edge = i === 0 ? "  (prints first, lowest)" : i === filaments.length - 1 ? "  (prints last, top)" : "";
@@ -324,6 +324,14 @@ export function slotNote(filaments, { layerHeight = 0.08, back = null } = {}) {
     lines.push("", `Back art: slot ${back.slot}, in the first ${back.layers} layer${back.layers === 1 ? "" : "s"} (${fmt(back.depthMm)} mm).`,
       "It is printed against the plate and mirrored, so it reads when you turn",
       "the print over left-to-right. In Studio it is the part named \"Back art\".");
+  }
+  if (ring) {
+    lines.push("", `Art border: ${fmt(ring.widthMm)} mm wide, ${fmt(ring.topMm)} mm tall, in place of the rim.`);
+    if (ring.slot) {
+      lines.push(ring.inlay
+        ? `Its pattern is inlaid in slot ${ring.slot}, the top ${fmt(ring.reliefMm)} mm ("Art border pattern").`
+        : `Its pattern stands ${fmt(ring.reliefMm)} mm proud in slot ${ring.slot} ("Art border pattern").`);
+    }
   }
   return lines.join("\n") + "\n";
 }
