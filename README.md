@@ -212,6 +212,19 @@ is newer. The desktop exporter has the same two problems and wants the same
 change. Studio keeps its log encrypted, so the exact rejection reason is
 inferred, not read.
 
+## Studio-style controls and spools
+
+Buttons follow Bambu Studio's device panel so the app feels familiar next to
+it: rounded (8 px), filled grey, the selected option a solid fill in the stage
+colour, secondary actions an outline. Solve's filaments are an **AMS panel**:
+one spool per slot, A1 and A2 down the left and A4 and A3 down the right as
+Studio lays them out, each with its slot badge, "PLA" and a pencil; tap a spool
+to choose its colour. Slot 1 = A1 (slots 5-8 would be B1-B4). Export's slot
+list and the Back stage's colour choices use small spools.
+
+The spools and icons are drawn in `src/spool.js` (our own SVG, no Bambu
+artwork; colours come in through CSS variables).
+
 ## Main menu
 
 The old project list is now a **main menu** (`menuMain` in `main.js`): a hero

@@ -19,6 +19,7 @@ import { uuid } from "./state.js";
 import { h } from "./dom.js";
 import { actionSheet, attachRail, colourSheet, folderSheet, slider } from "./ui.js";
 import { hexToRgb, toHex } from "./colour.js";
+import { amsIcon, amsName, paintSpool, slotBadge, spool } from "./spool.js";
 
 const root = document.getElementById("app");
 const SOLVE_PROXY = 360;      // live solve resolution (long edge)
@@ -1575,8 +1576,9 @@ function renderSolve(screen, action) {
       onChange: (hex) => {
         f.hex = hex; f.name = "";
         s.colours_auto = false;   // picked by hand: leave it alone from here on
-        btn.style.background = hex;
+        paintSpool(btn.querySelector(".spool") || btn, hex);
         btn.setAttribute("aria-label", `slot ${f.slot} colour ${hex}`);
+        filEl.querySelector(".ams-icon")?.replaceWith(amsIcon(s.filaments.map((x) => x.hex)));
         queue();
       },
       onClose: () => { currentSheet = null; },
@@ -1599,31 +1601,39 @@ function renderSolve(screen, action) {
   /** colours that were picked by the fit follow the stack when it changes */
   const refit = () => { if (s.colours_auto) { fitColours(); refitTable(); } };
   /** The slots as a 2 x 2 grid of small cards: swatch, TD and layers each. */
+  // the filaments as Studio's AMS panel shows them: A1 and A2 down the left,
+  // A4 and A3 down the right, a spool each; tap a spool for its colour
   const filTable = () => {
     strips = [];
-    return h("div", { class: "fil-grid" },
-      s.filaments.map((f, i) => {
-        const strip = h("i", { class: "pr", hidden: true });
-        strips.push(strip);
-        const edge = i === 0 ? "lowest" : i === s.filaments.length - 1 ? "top" : "";
-        return h("div", { class: "fil-card" },
-          h("div", { class: "fil-card-head" },
-            h("button", { class: "sw", type: "button", style: `background:${f.hex}`,
-              "aria-label": `slot ${f.slot} colour ${f.hex}`, onclick: (e) => openColour(f, i, e.currentTarget) }, strip),
-            h("span", { class: "fil-card-name" }, h("b", {}, `slot ${f.slot}`), h("span", { class: "meta" }, edge || f.hex))),
-          h("label", { class: "fil-field" }, "TD mm",
-            h("input", { class: "val", type: "number", inputmode: "decimal", step: "0.05", min: "0.05", max: "6",
-              value: Number(f.td_mm).toFixed(2), onchange: (e) => {
-                const v = Math.min(6, Math.max(0.05, parseFloat(e.target.value) || f.td_mm));
-                f.td_mm = v; e.target.value = v.toFixed(2); refit(); queue();
-              } })),
-          h("label", { class: "fil-field" }, "layers",
-            h("input", { class: "val", type: "number", inputmode: "numeric", step: "1", min: "0", max: "120",
-              value: String(f.band_layers), onchange: (e) => {
-                const v = Math.min(120, Math.max(0, parseInt(e.target.value, 10) || 0));
-                f.band_layers = v; e.target.value = String(v); refit(); queue();
-              } })));
-      }));
+    const n = s.filaments.length, half = Math.ceil(n / 2);
+    const cell = (f, i, side) => {
+      const strip = h("i", { class: "pr", hidden: true });
+      strips[i] = strip;
+      const btn = h("button", { class: "spool-btn", type: "button", "aria-label": `slot ${f.slot} colour ${f.hex}`,
+        onclick: (e) => openColour(f, i, e.currentTarget) }, spool(f.hex), strip);
+      const edge = i === 0 ? "lowest" : i === n - 1 ? "top" : "";
+      const field = (label, input) => h("label", { class: "ams-field" }, h("span", {}, label), input);
+      return h("div", { class: `ams-slot ${side}` },
+        h("div", { class: "ams-spool-row" }, side === "left" ? [slotBadge(f.slot, "left"), btn] : [btn, slotBadge(f.slot, "right")]),
+        h("div", { class: "ams-edge" }, `slot ${f.slot}${edge ? ` · ${edge}` : ""}`),
+        h("div", { class: "ams-fields" },
+          field("TD mm", h("input", { class: "val", type: "number", inputmode: "decimal", step: "0.05", min: "0.05", max: "6",
+            value: Number(f.td_mm).toFixed(2), onchange: (e) => {
+              const v = Math.min(6, Math.max(0.05, parseFloat(e.target.value) || f.td_mm));
+              f.td_mm = v; e.target.value = v.toFixed(2); refit(); queue();
+            } })),
+          field("layers", h("input", { class: "val", type: "number", inputmode: "numeric", step: "1", min: "0", max: "120",
+            value: String(f.band_layers), onchange: (e) => {
+              const v = Math.min(120, Math.max(0, parseInt(e.target.value, 10) || 0));
+              f.band_layers = v; e.target.value = String(v); refit(); queue();
+            } }))));
+    };
+    const left = s.filaments.slice(0, half).map((f, k) => cell(f, k, "left"));
+    const right = s.filaments.slice(half).map((f, k) => cell(f, half + k, "right")).reverse();
+    return h("div", { class: "ams" },
+      h("div", { class: "ams-head" }, amsIcon(s.filaments.map((f) => f.hex)),
+        h("span", {}, "AMS"), h("span", { class: "meta" }, "slot 1 = A1, prints first")),
+      h("div", { class: "ams-body" }, h("div", { class: "ams-col" }, left), h("div", { class: "ams-hub" }), h("div", { class: "ams-col" }, right)));
   };
   let filEl = filTable();
   const refitTable = () => { const fresh = filTable(); filEl.replaceWith(fresh); filEl = fresh; };
@@ -1651,7 +1661,7 @@ function renderSolve(screen, action) {
         `this project is at ${s.slope_mm_per_layer.toFixed(2)}, past the slider's 0.25 end; moving it sets a new value.`),
 
       head("filaments"),
-      h("p", { class: "meta hint" }, "slot 1 prints lowest · tap a swatch to choose its colour"),
+      h("p", { class: "meta hint" }, "slot 1 prints lowest · tap a spool to choose its colour"),
       filEl,
       h("button", { class: "btn wide gap-top", onclick: () => {
         fitColours(); refitTable(); queue();
@@ -1905,7 +1915,7 @@ function renderBackStage(screen, action) {
   fields.hidden = back.info === false;
   const fil = s.filaments;
   const slotOpts = [{ key: 0, label: "auto" }, ...fil.slice(1).map((f) => ({ key: f.slot,
-    label: h("span", { class: "chip-sw" }, h("i", { style: `background:${f.hex}` }), `slot ${f.slot}`) }))];
+    label: h("span", { class: "chip-sw" }, spool(f.hex, { mini: true }), `slot ${f.slot}`) }))];
   // the design gallery stays live while the art border uses it, even with a plain back
   const setOff = () => screen.classList.toggle("art-off", !back.enabled && !ab.enabled);
 
@@ -2367,8 +2377,8 @@ function renderExport(screen, action) {
       filesBox,
       head("filament slots"),
       h("div", { class: "slots" }, s.filaments.map((f, i) =>
-        h("div", { class: "slot" }, h("span", { class: "sw", style: `background:${f.hex}` }),
-          `slot ${f.slot}  ${f.hex}${i === 0 ? " · lowest" : i === s.filaments.length - 1 ? " · top" : ""}`))),
+        h("div", { class: "slot" }, spool(f.hex, { mini: true }),
+          `slot ${f.slot} (${amsName(f.slot)})  ${f.hex}${i === 0 ? " · lowest" : i === s.filaments.length - 1 ? " · top" : ""}`))),
       head("filament & print info"),
       info,
       numField("price ($ / kg)", ex.price_per_kg ?? 25, { step: "1", min: 0, max: 500, fmt: (v) => v.toFixed(2),
@@ -2494,7 +2504,7 @@ function soundFor(el) {
   // the main menu is silent: only picking a project blips
   if (!app.project) return b.matches(".project-open, .card-open, .menu-continue") ? "select" : null;
   // sliders and the scroll bar never sound; the stage buttons have their own page sound
-  if (b.matches(".slider-step, .pal-sw, .fil-grid .sw, .rail-btn, .action .btn.primary")) return null;
+  if (b.matches(".slider-step, .pal-sw, .spool-btn, .rail-btn, .action .btn.primary")) return null;
   if (b.matches(".step")) return b.classList.contains("locked") ? null : "tab";   // locked: "blocked" plays
   return "tap";
 }

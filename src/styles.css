@@ -755,3 +755,73 @@ html[data-side="1"] .art-grid { grid-template-rows: repeat(3, auto); }
   .step { gap: 4px; letter-spacing: .03em; font-size: 10.5px; padding: 0 2px; }
   .step.done .num::after { content: "✓"; }
 }
+
+/* ================================================================
+   Studio-style controls: rounded, filled buttons like Bambu Studio's
+   device panel, so the app feels familiar next to it. Our own CSS.
+   ================================================================ */
+:root { --btn: #2c2c29; --btn-line: #3b3b37; --r: 8px; }
+.btn, .chip, .big-btn, .slider-step, .brand.link, .rail-btn, .gl-btn, .step, .menu-item, .menu-tile,
+.project-open, .new-src, .new-drop, .val, .pal-sw, .update-bar button { border-radius: var(--r) !important; }
+.slider-step { border-radius: 12px !important; }
+.chip, .btn { background: var(--btn); border-color: var(--btn-line); }
+.chip { min-height: 38px; padding: 7px 12px; }
+.chip.on { background: var(--fill); border-color: var(--accent); color: #fff; }
+html[data-stage="prep"] .chip.on, html[data-stage="back"] .chip.on, html[data-stage="export"] .chip.on { color: #fff; }
+.chip.accent { background: transparent; border: 1.5px solid var(--accent); }
+/* secondary: an outline, like Studio's "Auto-refill" / "Calibration" */
+.btn.ghost { background: transparent; border: 1.5px solid var(--muted); border-style: solid; color: var(--text); }
+.btn.ghost:active { border-color: var(--accent); }
+/* main action: a flat, solid fill, like Studio's green buttons */
+.btn.primary { background: var(--fill); border-color: var(--fill); color: #fff; }
+.slider-step, .big-btn { background: var(--btn); border-color: var(--btn-line); }
+.val { border-radius: 6px !important; }
+
+/* ---- spools (src/spool.js) ---- */
+.spool { display: inline-block; width: 56px; height: 74px; flex: none; line-height: 0; }
+.spool.mini { width: 20px; height: 24px; vertical-align: middle; }
+.spool-svg { width: 100%; height: 100%; overflow: visible; }
+.sp-core { fill: var(--fil, #888); stroke: rgba(0, 0, 0, .55); stroke-width: 1; }
+.sp-wind { fill: none; stroke: rgba(0, 0, 0, .18); stroke-width: 1; stroke-dasharray: 1 3; }
+.sp-flange { fill: #f3f3ef; stroke: #9a9a92; stroke-width: 1; }
+.sp-rim { fill: none; stroke: #c9c9c2; stroke-width: 1; }
+.sp-hole { fill: #bdbdb5; }
+.sp-label { fill: var(--fil-ink, #fff); font: 700 11px var(--mono); text-anchor: middle; letter-spacing: .04em; }
+.sp-edit path { fill: var(--fil-ink, #fff); }
+.sp-edit .sp-line { fill: none; stroke: var(--fil-ink, #fff); stroke-width: 2; stroke-linecap: round; }
+.spool.mini .sp-flange { stroke-width: 1.5; }
+.chip-sw .spool.mini { margin-right: 2px; }
+.slot .spool.mini { width: 22px; height: 26px; }
+
+/* ---- the AMS panel (Solve) ---- */
+.ams { background: #1f1f1d; border: 1px solid var(--btn-line); border-radius: 12px !important; padding: 10px 10px 12px; }
+.ams-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-weight: 700; font-size: 13px; }
+.ams-head .meta { margin: 0 0 0 auto; font-size: 11px; font-weight: 400; }
+.ams-icon { display: inline-flex; gap: 3px; align-items: flex-end; padding: 5px 6px 4px; background: #d9d9d2;
+  border: 1.5px solid var(--accent); border-radius: 6px !important; height: 26px; }
+.ams-icon i { width: 6px; height: 14px; border-radius: 3px !important; box-shadow: 0 0 0 .5px rgba(0, 0, 0, .5); }
+.ams-body { display: grid; grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr); gap: 6px; }
+.ams-col { display: flex; flex-direction: column; gap: 12px; }
+.ams-hub { background: linear-gradient(90deg, #8a8a83, #d6d6cf 45%, #9a9a93); border-radius: 7px !important;
+  margin: 18px 0 40px; opacity: .55; }
+.ams-slot { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ams-spool-row { display: flex; align-items: center; gap: 4px; }
+.ams-slot.left .ams-spool-row { justify-content: flex-end; }
+.ams-slot.right .ams-spool-row { justify-content: flex-start; }
+.spool-btn { position: relative; padding: 0; background: none; border: 0; line-height: 0; }
+.spool-btn:active { transform: scale(.95); }
+.spool-btn .pr { position: absolute; left: 9px; right: 9px; bottom: -6px; height: 5px; border-radius: 3px !important;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .6); }
+.spool-btn .pr[hidden] { display: none; }
+.slot-badge { position: relative; width: 38px; height: 38px; flex: none; display: grid; place-items: center; color: var(--muted); }
+.slot-badge svg { position: absolute; inset: 0; width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
+.slot-badge .ar-head { stroke-linejoin: round; }
+.slot-badge.right svg { transform: scaleX(-1); }
+.slot-badge b { font: 700 12px var(--mono); color: var(--text); }
+.ams-edge { font-size: 10px; color: var(--muted); text-align: center; letter-spacing: .04em; margin-top: 4px; }
+.ams-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.ams-field { display: flex; flex-direction: column; gap: 2px; font-size: 10px; color: var(--muted); min-width: 0; }
+.ams-field .val { width: 100%; min-height: 36px; font-size: 13px; padding-left: 8px; padding-right: 6px;
+  -moz-appearance: textfield; appearance: textfield; }
+.ams-field .val::-webkit-inner-spin-button, .ams-field .val::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.spool.mini .sp-core { stroke: rgba(255, 255, 255, .35); }
