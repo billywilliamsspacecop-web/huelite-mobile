@@ -217,7 +217,7 @@ function layoutBlock({ title, maker, email, brand }, s, measure) {
 /** The back as seen after turning the print over left-to-right.
  *  grid = mesh.modelGrid(...): { cols, rows, cell, inside, widthMm, heightMm }. */
 export async function renderBack(grid, { title, maker, email, brand, pattern = "topo", design = "", seed = 0, weight = 1,
-                                         info = true, maxPixels = 3e6, minPx = 0.1 }) {
+                                         zoom = 1, shiftX = 0, shiftY = 0, info = true, maxPixels = 3e6, minPx = 0.1 }) {
   const font = await loadBackFont();
   const { cols, rows, cell, inside, widthMm: W, heightMm: H } = grid;
   // pixels line up with the mesh cells (a whole number per cell, or cells per
@@ -310,7 +310,7 @@ export async function renderBack(grid, { title, maker, email, brand, pattern = "
   let topo = null, step = 1, cov = null, thinnest = Infinity;
   if (pattern === "design") {
     // a line-art design (engine/lineart.js), seeded like the topo lines
-    ({ cov, thinnest } = designCoverage(design, { w, h, px, widthMm: W, heightMm: H, weight,
+    ({ cov, thinnest } = designCoverage(design, { w, h, px, widthMm: W, heightMm: H, weight, zoom, shiftX, shiftY,
       seed: (seed >>> 0) || hashString(texts.title || "print") }));
   } else if (pattern === "topo") {
     thinnest = Math.min(...LOOK.lineWidths) * weight;
@@ -448,9 +448,9 @@ function splitParts(art, toModel, z0, z1, rest) {
 
 /** A pattern's line coverage (0..1, 1 = ink) on a w x h grid of px-mm pixels
  *  covering widthMm x heightMm, as seen from the front. Returns { cov, thinnest }. */
-export function patternCoverage(pattern, { w, h, px, widthMm: W, heightMm: H, design = "", seed = 0, weight = 1, title = "" }) {
+export function patternCoverage(pattern, { w, h, px, widthMm: W, heightMm: H, design = "", seed = 0, weight = 1, zoom = 1, shiftX = 0, shiftY = 0, title = "" }) {
   const s = (seed >>> 0) || hashString(title || "print");
-  if (pattern === "design") return designCoverage(design, { w, h, px, widthMm: W, heightMm: H, weight, seed: s });
+  if (pattern === "design") return designCoverage(design, { w, h, px, widthMm: W, heightMm: H, weight, zoom, shiftX, shiftY, seed: s });
   const cov = new Float32Array(w * h);
   if (pattern !== "topo") return { cov, thinnest: Infinity };
   // the same contour lines as the back, without the title block to avoid
@@ -479,7 +479,7 @@ export function patternCoverage(pattern, { w, h, px, widthMm: W, heightMm: H, de
 /** The art border's top face: the pattern clipped to the ring cells of
  *  grid = mesh.modelGrid({ ..., ring }). Pixels split the cells evenly so
  *  the parts meet the columns exactly. */
-export function renderRingTop(grid, { pattern, design = "", seed = 0, weight = 1, title = "", maxPixels = 3e6, minPx = 0.1 }) {
+export function renderRingTop(grid, { pattern, design = "", seed = 0, weight = 1, zoom = 1, shiftX = 0, shiftY = 0, title = "", maxPixels = 3e6, minPx = 0.1 }) {
   const { cols, rows, cell, ring, widthMm: W, heightMm: H } = grid;
   const want = Math.max(minPx, Math.sqrt(W * H / maxPixels));
   const px = cell / Math.max(1, Math.ceil(cell / want - 1e-9));
@@ -492,7 +492,7 @@ export function renderRingTop(grid, { pattern, design = "", seed = 0, weight = 1
       fp[y * w + x] = ring && ring[row * cols + col] ? 1 : 0;
     }
   }
-  const { cov, thinnest } = patternCoverage(pattern, { w, h, px, widthMm: W, heightMm: H, design, seed, weight, title });
+  const { cov, thinnest } = patternCoverage(pattern, { w, h, px, widthMm: W, heightMm: H, design, seed, weight, zoom, shiftX, shiftY, title });
   const field = new Float32Array(w * h);
   for (let i = 0; i < field.length; i++) field[i] = fp[i] ? cov[i] : 0;
   return { field, fp, w, h, px, widthMm: W, heightMm: H, thinnest };

@@ -1746,7 +1746,7 @@ async function commitSolve() {
 }
 
 // ---------------------------------------------------------------- back
-// Line art for the plate side: a gallery of the 40 designs (engine/lineart.js)
+// Line art for the plate side: a gallery of the single-ink designs (engine/lineart.js)
 // plus the built-in topo lines, then seed, line weight, info block, colour
 // and thickness. Export shows the result and builds it.
 let artFilter = "All";        // gallery tab on the Back stage
@@ -1835,7 +1835,7 @@ function renderBackStage(screen, action) {
     return h("button", { class: "art-tile", type: "button", title: t.name, "aria-label": t.name, onclick: () => {
       if (t.key === "plain" || t.key === "topo") back.pattern = t.key;
       else { back.pattern = "design"; back.design = t.design; }
-      paintPick(); paintSeed(); changed(0);
+      paintPick(); paintSeed(); paintFrame(); changed(0);
     } }, cv, h("span", {}, t.name));
   });
   const showTab = () => tileEls.forEach((el, i) => {
@@ -1906,6 +1906,21 @@ function renderBackStage(screen, action) {
   const weight = rangeField("line weight", Math.round((back.weight ?? 1) * 100), {
     min: lineart.WEIGHT_MIN * 100, max: lineart.WEIGHT_MAX * 100, step: 5, fmt: (v) => `${(v / 100).toFixed(2)}×`,
     oninput: (v) => { back.weight = v / 100; changed(150); drawThumbs(300); } });
+  // frame: zoom and shift the art on the plate (designs only; the topo lines are fitted to the outline)
+  const frameBox = h("div", { class: "frame-ctrls" },
+    rangeField("zoom", Math.round((back.zoom ?? 1) * 100), { min: lineart.ZOOM_MIN * 100, max: lineart.ZOOM_MAX * 100, step: 5,
+      fmt: (v) => `${(v / 100).toFixed(2)}×`, oninput: (v) => { back.zoom = v / 100; changed(150); } }),
+    rangeField("shift left / right", back.shift_x ?? 0, { min: -lineart.SHIFT_MAX, max: lineart.SHIFT_MAX, step: 5,
+      fmt: (v) => `${v > 0 ? "+" : ""}${v} mm`, oninput: (v) => { back.shift_x = v; changed(150); } }),
+    rangeField("shift up / down", back.shift_y ?? 0, { min: -lineart.SHIFT_MAX, max: lineart.SHIFT_MAX, step: 5,
+      fmt: (v) => `${v > 0 ? "+" : ""}${v} mm`, oninput: (v) => { back.shift_y = v; changed(150); } }),
+    h("button", { class: "chip", type: "button", onclick: () => {
+      back.zoom = 1; back.shift_x = 0; back.shift_y = 0;
+      frameBox.querySelectorAll("input[type=range]").forEach((el, i) => { el.value = i ? 0 : 100; el.dispatchEvent(new Event("input")); });
+      changed(0); } }, "reset frame"),
+    h("p", { class: "meta hint" }, "zoom in to thicken lines and crop in on a detail; zoom out to shrink the whole design. the thinnest-line check above follows the zoom."));
+  const paintFrame = () => { frameBox.hidden = back.pattern !== "design"; };
+  paintFrame();
   const textField = (label, key) => h("label", { class: "field stacked" }, label,
     h("input", { class: "val wide-val", value: backTexts()[key], oninput: (e) => {
       setPref(`back.${key}`, e.target.value);
@@ -1972,6 +1987,7 @@ function renderBackStage(screen, action) {
       head("pattern"),
       seedRow,
       weight,
+      frameBox,
       h("p", { class: "meta hint" }, "line widths are real millimetres. a design keeps its size on prints up to 200 mm and grows to cover bigger ones."),
       head("info block"),
       optGrid([{ key: "on", label: "border + info block" }, { key: "off", label: "border only" }], back.info === false ? "off" : "on",
@@ -2116,7 +2132,7 @@ function frontPreview(back) {
   const k = Math.max(1, Math.ceil(Math.sqrt(w * hh / 1e6))), px = mm / w;
   const cw = Math.ceil(w / k), ch = Math.ceil(hh / k);
   const { cov } = backart.patternCoverage(back.pattern, { w: cw, h: ch, px: px * k, widthMm: cw * k * px, heightMm: ch * k * px,
-    design: back.design, seed: back.seed, weight: back.weight ?? 1, title: app.project.name });
+    design: back.design, seed: back.seed, weight: back.weight ?? 1, ...backFrame(back), title: app.project.name });
   const all = mask || new Uint8Array(w * hh).fill(1);
   const band = shape.rim(all, w, hh, Math.max(1, Math.round(ab.widthMm / px)));
   const ink = hexToRgb(ab.hex), d = img.data;
@@ -2181,14 +2197,17 @@ function withDefaults(obj, defaults) {
 function backSettings() {
   const ex = app.project.export;
   // filled in place: the stages hold on to this object and change it as you go
-  ex.back = withDefaults(ex.back, { enabled: true, slot: 0, layers: 2, pattern: "topo", design: "", seed: 0, weight: 1, info: true });
+  ex.back = withDefaults(ex.back, { enabled: true, slot: 0, layers: 2, pattern: "topo", design: "", seed: 0, weight: 1, zoom: 1, shift_x: 0, shift_y: 0, info: true });
   if (ex.back.pattern === "design" && !lineart.designById(ex.back.design)) ex.back.pattern = "topo";
   return ex.back;
 }
 
 /** backart.renderBack options for these settings. */
 const backArtOpts = (back) => ({ ...backTexts(), pattern: back.pattern, design: back.design, seed: back.seed,
-                                 weight: back.weight ?? 1, info: back.info !== false });
+                                 weight: back.weight ?? 1, ...backFrame(back), info: back.info !== false });
+
+/** Zoom and shift of a design on the plate, as the generator's options. */
+const backFrame = (back) => ({ zoom: back.zoom ?? 1, shiftX: back.shift_x ?? 0, shiftY: back.shift_y ?? 0 });
 
 const backArtName = (back) => back.pattern === "design" ? (lineart.designById(back.design)?.name || "design")
   : back.pattern === "topo" ? "Topographic" : "border only";
@@ -2431,7 +2450,7 @@ function renderExport(screen, action) {
       if (ring?.patterned) {
         // the pattern on the band's top face, over the columns modelArgs() stopped short (inlay) or under it (raised)
         const art = backart.renderRingTop(mesh.modelGrid(modelArgs()), { pattern: back.pattern, design: back.design,
-          seed: back.seed, weight: back.weight ?? 1, title: app.project.name });
+          seed: back.seed, weight: back.weight ?? 1, ...backFrame(back), title: app.project.name });
         for (const part of backart.ringParts(art, { z0: ring.z0, z1: ring.z1, slot: ring.slot,
           restSlot: ring.inlay ? ring.restSlot : null })) mesh.addMeshPart(model, part);
       }

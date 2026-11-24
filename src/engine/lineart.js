@@ -1,7 +1,7 @@
 // Line-art designs for the back of a print (the Back stage).
 //
 // The designs live in backplate-art/backplate-art.js (the Print-Brick
-// back-plate generator, dropped in as-is so a newer copy can replace it): 40
+// back-plate generator, dropped in as-is so a newer copy can replace it): 196
 // procedural drawings in millimetres on a 200 x 200 mm canvas, stroked on any
 // 2D canvas. That file sets `PBArt` on the global object; this module is the
 // only place the app touches it.
@@ -16,10 +16,16 @@ import "../../backplate-art/backplate-art.js";
 const P = globalThis.PBArt;
 const CANVAS_MM = P.W;           // 200
 
-/** [{ id, name, note, group }] in the generator's order. */
-export const DESIGNS = P.designs.map(({ id, name, note, group }) => ({ id, name, note, group }));
-export const GROUPS = ["Original", "Printer", "Faith"];
+/** [{ id, name, note, group }] in the generator's order. Multi-colour designs
+ *  (flagged `multi` by the generator: palette bands and blends) are left out
+ *  until the app can print more than one ink on the back; drawn in one ink
+ *  they would be solid blocks. */
+export const DESIGNS = P.designs.filter((d) => !d.multi).map(({ id, name, note, group }) => ({ id, name, note, group }));
+/** Themes, in the generator's order. */
+export const GROUPS = [...new Set(DESIGNS.map((d) => d.group))];
 export const WEIGHT_MIN = 0.6, WEIGHT_MAX = 2.2;
+/** Zoom and shift of the art on the plate: zoom about the design's centre, shift in mm of the 200 mm design. */
+export const ZOOM_MIN = 0.5, ZOOM_MAX = 3, SHIFT_MAX = 100;
 
 const indexOf = (id) => P.designs.findIndex((d) => d.id === id);
 export const designById = (id) => DESIGNS[indexOf(id)] || null;
@@ -47,7 +53,7 @@ export function drawThumb(canvas, id, { seed, weight = 1, ink, bg }) {
 /** The design as coverage (0..1 per pixel, 1 = ink) on a w x h grid of px-mm
  *  pixels covering widthMm x heightMm, as the back is seen (not mirrored).
  *  Returns { cov, thinnest } with thinnest in real mm after scaling. */
-export function designCoverage(id, { w, h, px, widthMm, heightMm, seed, weight = 1 }) {
+export function designCoverage(id, { w, h, px, widthMm, heightMm, seed, weight = 1, zoom = 1, shiftX = 0, shiftY = 0 }) {
   const idx = indexOf(id);
   const cov = new Float32Array(w * h);
   if (idx < 0) return { cov, thinnest: Infinity };
@@ -60,8 +66,8 @@ export function designCoverage(id, { w, h, px, widthMm, heightMm, seed, weight =
   ctx.fillRect(0, 0, w, h);
   ctx.setTransform(k / px, 0, 0, k / px, ox / px, oy / px);
   // contour designs sample a grid: about two pixels a cell, 0.25 mm at the finest (the generator's export setting)
-  const step = Math.min(1.6, Math.max(0.25, (2 * px) / k));
-  const min = P.render(ctx, idx, { seed: seed | 0, ls: weight, ink: "#fff", bg: "#000", step, margin: 0 });
+  const step = Math.min(1.6, Math.max(0.25, (2 * px) / k / Math.max(1, zoom / 1.5)));
+  const min = P.render(ctx, idx, { seed: seed | 0, ls: weight, ink: "#fff", bg: "#000", step, margin: 0, zoom, px: shiftX, py: shiftY });
   const data = ctx.getImageData(0, 0, w, h).data;
   for (let i = 0; i < cov.length; i++) cov[i] = data[i * 4] / 255;
   return { cov, thinnest: min * k };

@@ -107,8 +107,9 @@ export function defaultData(name) {
       price_per_kg: 25.0,
       // art printed on the plate side (engine/backart.js), set on the Back stage; slot 0 = pick the most
       // contrasting filament. pattern: topo (built-in topo lines) | design (a line-art design, by id) | plain.
-      // seed 0 = pattern from the name; weight = line-weight multiplier; info = the title block.
-      back: { enabled: true, slot: 0, layers: 2, pattern: "topo", design: "", seed: 0, weight: 1, info: true },
+      // seed 0 = pattern from the name; weight = line-weight multiplier; zoom / shift_x / shift_y = frame of a
+      // design on the plate (zoom 0.5-3, shift in mm of the 200 mm design); info = the title block.
+      back: { enabled: true, slot: 0, layers: 2, pattern: "topo", design: "", seed: 0, weight: 1, zoom: 1, shift_x: 0, shift_y: 0, info: true },
       // a band round the print in place of the rim, with the back's design on its top face (set on the Back
       // stage). style: inlay (flush, two colours) | raised (the lines stand up). height = fraction of the print's.
       art_border: { enabled: false, style: "inlay", width_mm: 4, height: 0.5 },
@@ -205,7 +206,9 @@ export function sanitizeProject(raw) {
                       layers: Math.round(num(bk.layers, 2, 1, 3)), pattern: pick(bk.pattern, ["topo", "plain", "design"], "topo"),
                       design: text(bk.design, "", 40).replace(/[^a-z0-9_-]/gi, ""),
                       seed: Math.round(num(bk.seed, 0, 0, 4294967295)),
-                      weight: +num(bk.weight, 1, 0.6, 2.2).toFixed(2), info: bk.info !== false };
+                      weight: +num(bk.weight, 1, 0.6, 2.2).toFixed(2),
+                      zoom: +num(bk.zoom, 1, 0.5, 3).toFixed(2), shift_x: Math.round(num(bk.shift_x, 0, -100, 100)),
+                      shift_y: Math.round(num(bk.shift_y, 0, -100, 100)), info: bk.info !== false };
   const ab = obj(ex.art_border);
   out.export.art_border = { enabled: ab.enabled === true, style: pick(ab.style, ["inlay", "raised"], "inlay"),
                             width_mm: +num(ab.width_mm, 4, 1, 15).toFixed(1), height: +num(ab.height, 0.5, 0.1, 1).toFixed(2) };
