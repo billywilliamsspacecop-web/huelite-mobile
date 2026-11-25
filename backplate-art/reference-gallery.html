@@ -917,7 +917,7 @@ input[type=range]{width:100%;accent-color:var(--ink);margin:6px 0 0}
   /* feather in local space: base at (x,y), pointing along angle `ang`; bend curves the shaft */
   function feather(A, x, y, len, wid, ang, bend, o) {
     o = o || {}; const ctx = A.ctx; ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
-    const pitch = o.pitch || 1.9, start = o.start == null ? 0.14 : o.start;
+    const pitch = o.pitch || 2.8, start = o.start == null ? 0.14 : o.start;
     const R = t => [len * t, 2 * (1 - t) * t * bend], T = t => { const dx = len, dy = 2 * bend * (1 - 2 * t), l = Math.hypot(dx, dy); return [dx / l, dy / l]; };
     const L = [], Rt = [], n = Math.max(6, Math.floor(len * (1 - start) / pitch));
     for (let k = 0; k <= n; k++) {
@@ -936,7 +936,7 @@ input[type=range]{width:100%;accent-color:var(--ink);margin:6px 0 0}
   P.feather = feather;
 
   /* ================= FEATHERS ================= */
-  add('Feathers', 'feather1', 'Long feather', 'Three feathers overlapping on a diagonal, shafts curved, barbs at 1.9 mm pitch.',
+  add('Feathers', 'feather1', 'Long feather', 'Three feathers overlapping on a diagonal, shafts curved, barbs at 2.8 mm pitch.',
     A => { const { rng } = A;
       [[-0.5, 215, 22, 12, 0], [0.3, 175, 17, -9, 1], [0.15, 120, 12, 6, 2]].forEach(([dx, len, wid, bend, k]) => {
         const sx = 38 + k * 34 + dx * 20, sy = 178 - k * 14; feather(A, sx, sy, len, wid, -0.95 + dx * 0.25, bend, { fill: true });
@@ -944,7 +944,7 @@ input[type=range]{width:100%;accent-color:var(--ink);margin:6px 0 0}
 
   add('Feathers', 'fan', 'Feather fan', 'Eleven feathers fanned from one point, center ones on top.',
     A => { const N = 11, order = [...Array(N).keys()].sort((a, b) => Math.abs(b - 5) - Math.abs(a - 5));
-      order.forEach(i => { const a = -Math.PI / 2 + (i - 5) * 0.2, len = 175 - Math.abs(i - 5) * 4; feather(A, 100, 196, len, 14, a, (i - 5) * 1.6, { fill: true, pitch: 2.1 }); }); });
+      order.forEach(i => { const a = -Math.PI / 2 + (i - 5) * 0.2, len = 175 - Math.abs(i - 5) * 4; feather(A, 100, 196, len, 14, a, (i - 5) * 1.6, { fill: true, pitch: 3.0 }); }); });
 
   add('Feathers', 'plumage', 'Plumage scales', 'Rows of overlapping feather tips with a midrib, upper rows on top.',
     A => { const { ctx, rng } = A, w = 17, h = 11;
@@ -966,25 +966,25 @@ input[type=range]{width:100%;accent-color:var(--ink);margin:6px 0 0}
 
   add('Feathers', 'down', 'Down plumes', 'Nine fluffy plumes with long curled barbs.',
     A => { const { ctx, rng } = A, spots = [];
-      for (let k = 0; k < 400 && spots.length < 9; k++) { const p = [20 + rng() * 160, 20 + rng() * 160]; if (spots.every(q => Math.hypot(q[0] - p[0], q[1] - p[1]) > 52)) spots.push(p); }
+      for (let k = 0; k < 400 && spots.length < 9; k++) { const p = [20 + rng() * 160, 20 + rng() * 160]; if (spots.every(q => Math.hypot(q[0] - p[0], q[1] - p[1]) > 60)) spots.push(p); }
       spots.forEach(([x, y]) => {
         const len = 44 + rng() * 22, ang = rng() * TAU, bend = (rng() - 0.5) * 24; ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
         ctx.lineWidth = A.lw(1.1); ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(len / 2, bend, len, 0); ctx.stroke(); ctx.lineWidth = A.lw(0.6);
-        for (let k = 0; k < 26; k++) { const t = 0.1 + 0.9 * k / 25, px = len * t, py = 2 * (1 - t) * t * bend, L = (10 + 8 * Math.sin(Math.PI * t)) * (0.7 + rng() * 0.5);
+        for (let k = 0; k < 15; k++) { const t = 0.1 + 0.9 * k / 14, px = len * t, py = 2 * (1 - t) * t * bend, L = (10 + 8 * Math.sin(Math.PI * t)) * (0.7 + rng() * 0.5);
           for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(px, py); ctx.quadraticCurveTo(px + L * 0.4, py + s * L * 0.9, px + L * 0.9, py + s * L * (0.5 + rng() * 0.8)); ctx.stroke(); } }
         ctx.restore(); }); });
 
   add('Feathers', 'wing', 'Wing', 'A spread wing in three tiers: primaries, secondaries, coverts.',
     A => { const sx = 22, sy = 176;
-      [[175, 9, -1.28, -0.12, 15, 3.3], [125, 9, -1.42, -0.28, 12, 2.2], [78, 8, -1.55, -0.38, 9, 1.6]].forEach(([len, n, a0, a1, wid, bend]) => {
-        for (let i = 0; i < n; i++) { const a = a0 + (a1 - a0) * i / (n - 1); feather(A, sx, sy, len * (0.88 + 0.12 * Math.sin(i / (n - 1) * Math.PI)), wid, a, bend * (i < n / 2 ? 1 : -1), { fill: true, pitch: 2.0 }); }
+      [[175, 7, -1.28, -0.12, 15, 3.3], [125, 7, -1.42, -0.28, 12, 2.2], [78, 6, -1.55, -0.38, 9, 1.6]].forEach(([len, n, a0, a1, wid, bend]) => {
+        for (let i = 0; i < n; i++) { const a = a0 + (a1 - a0) * i / (n - 1); feather(A, sx, sy, len * (0.88 + 0.12 * Math.sin(i / (n - 1) * Math.PI)), wid, a, bend * (i < n / 2 ? 1 : -1), { fill: true, pitch: 2.9 }); }
       });
       A.ctx.lineWidth = A.lw(1.6); A.ctx.beginPath(); A.ctx.arc(sx, sy, 8, 0, TAU); A.ctx.stroke(); });
 
   add('Feathers', 'drift', 'Drifting feathers', 'Sixteen small feathers tumbling through the plate at random angles.',
     A => { const { rng } = A, spots = [];
       for (let k = 0; k < 2000 && spots.length < 16; k++) { const p = [14 + rng() * 172, 14 + rng() * 172]; if (spots.every(q => Math.hypot(q[0] - p[0], q[1] - p[1]) > 40)) spots.push(p); }
-      spots.forEach(([x, y]) => { const len = 38 + rng() * 14; feather(A, x - len / 2, y, len, 7.5 + rng() * 3, (rng() - 0.5) * 0.4 + (rng() < 0.5 ? 0 : Math.PI) + rng() * 1.2, (rng() - 0.5) * 8, { fill: true, pitch: 1.8, barbW: 0.6 }); }); });
+      spots.forEach(([x, y]) => { const len = 38 + rng() * 14; feather(A, x - len / 2, y, len, 7.5 + rng() * 3, (rng() - 0.5) * 0.4 + (rng() < 0.5 ? 0 : Math.PI) + rng() * 1.2, (rng() - 0.5) * 8, { fill: true, pitch: 2.6, barbW: 0.6 }); }); });
 
   /* ================= WEATHER AND SEASONS ================= */
   function cloud(A, cx, base, w, h) {
@@ -1289,7 +1289,7 @@ input[type=range]{width:100%;accent-color:var(--ink);margin:6px 0 0}
 
   add('Bible', 'ladder', 'Jacob’s ladder', 'A ladder climbing in perspective into rays of light, with stars either side.',
     A => { const { ctx, rng } = A, xl = y => 62 + (98 - 62) * (198 - y) / 178, xr = y => 138 + (102 - 138) * (198 - y) / 178;
-      ctx.lineWidth = A.lw(0.6); for (let k = 0; k < 44; k++) { const a = -Math.PI / 2 + (k - 21.5) * 0.065 + Math.PI; const ex = 100 + Math.cos(a - Math.PI) * 260, ey = 14 - Math.sin(a - Math.PI) * 0; line(ctx, 100, 12, 100 + (k - 21.5) * 14, 200); }
+      ctx.lineWidth = A.lw(0.6); for (let k = 0; k < 30; k++) { line(ctx, 100 + (k - 14.5) * 1.8, 12, 100 + (k - 14.5) * 20, 200); }
       ctx.fillStyle = A.bg; poly(ctx, [[xl(198) - 4, 198], [xl(20) - 1, 20], [xr(20) + 1, 20], [xr(198) + 4, 198]]); ctx.fill();
       for (const f of [xl, xr]) for (const d of [-1.8, 1.8]) { ctx.lineWidth = A.lw(1.4); line(ctx, f(198) + d * 1.4, 198, f(20) + d * 0.4, 20); }
       for (let k = 0, y = 190; y > 26; k++) { const t = y; ctx.lineWidth = A.lw(1.6); line(ctx, xl(t), t, xr(t), t); y = 20 + (y - 20) * 0.86 - 1.2; }
@@ -1406,7 +1406,7 @@ input[type=range]{width:100%;accent-color:var(--ink);margin:6px 0 0}
 
   add('Angels', 'descend', 'Descending light', 'A beam of light from above, with rays fanning down onto a dove in flight.',
     A => { const { ctx } = A;
-      ctx.lineWidth = A.lw(0.7); for (let k = 0; k < 40; k++) { const t = (k - 19.5) / 20; line(ctx, 100 + t * 6, 0, 100 + t * 96, 200); }
+      ctx.lineWidth = A.lw(0.7); for (let k = 0; k < 24; k++) { const t = (k - 11.5) / 12; line(ctx, 100 + t * 14, 0, 100 + t * 96, 200); }
       ctx.fillStyle = A.bg; ctx.beginPath(); ctx.ellipse(100, 108, 62, 22, 0, 0, TAU); ctx.fill();
       ctx.lineWidth = A.lw(1.6); ctx.beginPath(); ctx.moveTo(88, 106); ctx.quadraticCurveTo(100, 98, 112, 106); ctx.quadraticCurveTo(110, 120, 100, 126); ctx.quadraticCurveTo(90, 120, 88, 106); ctx.stroke();
       for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(100 + s * 8, 104); ctx.bezierCurveTo(100 + s * 30, 70, 100 + s * 50, 74, 100 + s * 58, 88); ctx.bezierCurveTo(100 + s * 46, 90, 100 + s * 40, 98, 100 + s * 34, 108); ctx.bezierCurveTo(100 + s * 40, 106, 100 + s * 46, 108, 100 + s * 48, 114); ctx.bezierCurveTo(100 + s * 34, 118, 100 + s * 22, 114, 100 + s * 10, 112); ctx.stroke(); }
@@ -1497,15 +1497,15 @@ input[type=range]{width:100%;accent-color:var(--ink);margin:6px 0 0}
 
   add('Space', 'eclipse', 'Total eclipse', 'A dark disc with a corona of rays, thin rings, and a diamond-ring flare.',
     A => { const { ctx, rng } = A, cx = 100, cy = 100, R = 36, ox = rng() * 30;
-      for (let k = 0; k < 150; k++) { const a = k * TAU / 150, n = A.fbm(Math.cos(a) * 3 + ox, Math.sin(a) * 3, 3), L = 8 + n * 52 * (0.4 + 0.6 * Math.abs(Math.cos(a * 2))); ctx.lineWidth = A.lw(k % 3 ? 0.8 : 1.4); line(ctx, cx + Math.cos(a) * (R + 4), cy + Math.sin(a) * (R + 4), cx + Math.cos(a) * (R + 4 + L), cy + Math.sin(a) * (R + 4 + L)); }
+      for (let k = 0; k < 90; k++) { const a = k * TAU / 90, n = A.fbm(Math.cos(a) * 3 + ox, Math.sin(a) * 3, 3), L = 8 + n * 52 * (0.4 + 0.6 * Math.abs(Math.cos(a * 2))); ctx.lineWidth = A.lw(k % 3 ? 0.8 : 1.2); line(ctx, cx + Math.cos(a) * (R + 4), cy + Math.sin(a) * (R + 4), cx + Math.cos(a) * (R + 4 + L), cy + Math.sin(a) * (R + 4 + L)); }
       ctx.fillStyle = A.bg; circ(ctx, cx, cy, R + 2); ctx.fill(); ctx.lineWidth = A.lw(2); circ(ctx, cx, cy, R); ctx.stroke(); ctx.lineWidth = A.lw(0.8); circ(ctx, cx, cy, R + 5); ctx.stroke();
       ctx.lineWidth = A.lw(1.4); for (let k = 0; k < 8; k++) { const a = -0.9 + k * 0.07; line(ctx, cx + Math.cos(a) * R, cy + Math.sin(a) * R, cx + Math.cos(a) * (R + 12 + (k % 2) * 4), cy + Math.sin(a) * (R + 12 + (k % 2) * 4)); } });
 
   add('Space', 'comets', 'Comet shower', 'Six comets streaking down-left, each a ring head with a tail of tapered lines.',
     A => { const { ctx, rng } = A, ang = Math.PI * 0.78;
-      for (let k = 0; k < 6; k++) { const x = 40 + rng() * 150, y = 10 + rng() * 120, r = 3 + rng() * 4, L = 40 + rng() * 60, n = 7;
+      const placed = []; for (let k = 0; k < 6; k++) { let x, y; for (let t = 0; t < 60; t++) { x = 40 + rng() * 150; y = 10 + rng() * 120; if (placed.every(q => Math.hypot(q[0] - x, q[1] - y) > 44)) break; } placed.push([x, y]); const r = 3 + rng() * 4, L = 40 + rng() * 60, n = 5;
         ctx.fillStyle = A.bg; circ(ctx, x, y, r); ctx.fill(); ctx.lineWidth = A.lw(1.4); ctx.stroke();
-        for (let i = 0; i < n; i++) { const o = (i - (n - 1) / 2) * (r * 0.5), px = Math.cos(ang + Math.PI / 2) * o, py = Math.sin(ang + Math.PI / 2) * o, l = L * (1 - Math.abs(i - (n - 1) / 2) / (n / 2 + 0.6)); ctx.lineWidth = A.lw(i === 3 ? 1.2 : 0.8); line(ctx, x + px + Math.cos(ang) * r, y + py + Math.sin(ang) * r, x + px + Math.cos(ang) * (r + l), y + py + Math.sin(ang) * (r + l)); } }
+        for (let i = 0; i < n; i++) { const o = (i - (n - 1) / 2) * Math.max(r * 0.6, 2.6), px = Math.cos(ang + Math.PI / 2) * o, py = Math.sin(ang + Math.PI / 2) * o, l = L * (1 - Math.abs(i - (n - 1) / 2) / (n / 2 + 0.6)); ctx.lineWidth = A.lw(i === 2 ? 1.2 : 0.8); line(ctx, x + px + Math.cos(ang) * r, y + py + Math.sin(ang) * r, x + px + Math.cos(ang) * (r + l), y + py + Math.sin(ang) * (r + l)); } }
       for (let k = 0; k < 18; k++) star(ctx, rng() * 200, rng() * 200, 1.2 + rng() * 1.6); });
 
   add('Space', 'nebula', 'Nebula', 'Warped clouds stacked as filled bands, each level a step further along the palette.',
@@ -2089,7 +2089,7 @@ input[type=range]{width:100%;accent-color:var(--ink);margin:6px 0 0}
     A => { const { ctx, rng } = A, ox = rng() * 30;
       const cl = y => 100 + 36 * Math.sin(y * 0.034 + 0.6) + 14 * Math.sin(y * 0.09);
       const G = sampleField((x, y) => { const d = Math.abs(x - cl(y)); return Math.min(1, d / 70) + 0.18 * A.fbm(x * 0.03 + ox, y * 0.03, 3); }, A.step * 1.2);
-      for (let k = 0; k < 20; k++) { const L = 0.05 + k * 0.05; ctx.lineWidth = A.lw(k % 5 === 0 ? 1.4 : 0.8); contourPath(ctx, G, L); }
+      for (let k = 0; k < 11; k++) { const L = 0.05 + k * 0.09; ctx.lineWidth = A.lw(k % 4 === 0 ? 1.4 : 0.8); contourPath(ctx, G, L); }
       ctx.lineWidth = A.lw(1.6); ctx.beginPath(); for (let y = -2; y <= 202; y += 2) { const x = cl(y); y < 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); } ctx.stroke(); });
 
   add('Desert', 'pear', 'Prickly pear', 'Branching oval pads covered in spine tufts, red fruit and flowers at the rims.',
