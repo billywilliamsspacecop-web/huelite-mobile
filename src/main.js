@@ -20,6 +20,8 @@ import { h } from "./dom.js";
 import { actionSheet, attachRail, colourSheet, folderSheet, slider } from "./ui.js";
 import { hexToRgb, toHex } from "./colour.js";
 import { amsIcon, amsName, paintSpool, slotBadge, spool } from "./spool.js";
+import { createShelf } from "./shelf.js";
+import { APP_VERSION, CLAUDE_NOTES, VERSIONS } from "./devinfo.js";
 
 const root = document.getElementById("app");
 const SOLVE_PROXY = 360;      // live solve resolution (long edge)
@@ -199,6 +201,17 @@ async function sourceHasAlpha(bmp) {
   return shape.hasAlpha(ctx.getImageData(0, 0, c.width, c.height).data);
 }
 
+/** The Dev page's choices for new projects. */
+function applyNewDefaults(d) {
+  let nd = {};
+  try { nd = JSON.parse(pref("newDefaults", "{}")) || {}; } catch { /* keep the built-in defaults */ }
+  const pre = SIZE_PRESETS.find((x) => x.key === nd.preset);
+  if (nd.preset === "custom") d.prep.preset = "custom";
+  else if (pre) { d.prep.preset = pre.key; d.prep.physical_width_mm = pre.w; }
+  if ([0, 3, 6].includes(nd.corners)) d.prep.corner_radius_mm = nd.corners;
+  if (typeof nd.brand === "boolean") d.export.brand.enabled = nd.brand;
+}
+
 /** Start a new project from a picked photo (gallery, camera or files). */
 async function startFromFile(e) {
     const file = e.target.files?.[0];
@@ -217,6 +230,7 @@ async function startFromFile(e) {
       const name = (file.name || "photo").replace(/\.[^.]+$/, "");
       app.project = defaultData(name);
       app.reach = 0;
+      applyNewDefaults(app.project);
       app.project.source = { filename: file.name, width_px: bmp.width, height_px: bmp.height };
       // a transparent PNG almost always means "cut it out"
       if (app.sourceHasAlpha) app.project.prep.shape.mode = "alpha";
@@ -283,6 +297,29 @@ for (const ev of ["input", "change", "click", "pointerup"]) root.addEventListene
 document.addEventListener("visibilitychange", () => { if (document.hidden) persistNow(); });
 
 /** 256px square PNG for the project list. */
+/** The whole print, not square-cropped, for the projects shelf: at most 480 px
+ *  on its long edge, clear outside the outline. */
+function faceBlob(source, mask = null, mirror = false) {
+  const k = Math.min(1, 480 / Math.max(source.width, source.height));
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(source.width * k)); c.height = Math.max(1, Math.round(source.height * k));
+  const ctx = c.getContext("2d");
+  if (mask) {
+    // the outline as alpha, at full size, then scaled down with the picture
+    const full = document.createElement("canvas");
+    full.width = source.width; full.height = source.height;
+    const fx = full.getContext("2d");
+    fx.drawImage(source, 0, 0);
+    const id = fx.getImageData(0, 0, full.width, full.height);
+    for (let i = 0; i < mask.length && i * 4 < id.data.length; i++) if (!mask[i]) id.data[i * 4 + 3] = 0;
+    fx.putImageData(id, 0, 0);
+    source = full;
+  }
+  if (mirror) { ctx.translate(c.width, 0); ctx.scale(-1, 1); }
+  ctx.drawImage(source, 0, 0, c.width, c.height);
+  return new Promise((r) => c.toBlob(r, "image/png"));
+}
+
 function thumbBlob(source) {
   const c = document.createElement("canvas");
   c.width = c.height = 256;
@@ -1067,18 +1104,18 @@ let sideQueue = Promise.resolve();   // one GL context at a time
 
 /** Route the home screen to whichever menu page is open. */
 function renderHome(screen) {
-  ({ main: menuMain, new: menuNew, projects: menuProjects, settings: menuSettings, help: menuHelp, about: menuAbout }[menuPage]
+  ({ main: menuMain, new: menuNew, projects: menuProjects, settings: menuSettings, help: menuHelp, about: menuAbout, dev: menuDev }[menuPage]
     || menuMain)(screen);
 }
 
 function menuProjects(screen) {
-  const album = pref("view", "list") === "album";
+  if (pref("view", "shelf") === "shelf") return menuShelf(screen);
+  const album = pref("view", "shelf") === "album";
   const holder = h("div", { class: "home-list" }, loader("loading projects", true));
   const collapsed = new Set((() => { try { return JSON.parse(pref("collapsed", "[]")); } catch { return []; } })());
   const keepCollapsed = () => setPref("collapsed", JSON.stringify([...collapsed]));
 
-  const viewChips = chipGroup([{ key: "list", label: "list" }, { key: "album", label: "album" }],
-    album ? "album" : "list", (k) => { setPref("view", k); render(); });
+  const viewChips = projectViewChips(album ? "album" : "list");
   const newBtn = h("button", { class: "btn wide", type: "button", onclick: newProject }, "+ new project");
 
   screen.append(pane("ctrl",
@@ -1231,6 +1268,173 @@ function menuProjects(screen) {
   load();
 }
 
+const projectViewChips = (current) => chipGroup(
+  [{ key: "shelf", label: "shelf" }, { key: "list", label: "list" }, { key: "album", label: "album" }],
+  current, (k) => { setPref("view", k); render(); });
+
+const SORTS = {
+  recent: { label: "recent", fn: (a, b) => (b.modified || "").localeCompare(a.modified || "") },
+  name: { label: "a–z", fn: (a, b) => a.data.name.localeCompare(b.data.name, undefined, { numeric: true, sensitivity: "base" }) },
+  size: { label: "size", fn: (a, b) => printSize(b.data).area - printSize(a.data).area },
+  progress: { label: "progress", fn: (a, b) => stagesDone(b.data) - stagesDone(a.data) },
+};
+const stagesDone = (d) => STAGES.filter((st) => d.status[st] === COMPLETE).length;
+
+/** A project's print size in mm and its preset's name, if it uses one. */
+function printSize(d) {
+  const w = d.prep.physical_width_mm;
+  const c = d.prep.crop;
+  const ar = c ? c[2] / Math.max(1, c[3]) : (d.source.width_px || 1) / Math.max(1, d.source.height_px || 1);
+  const hgt = w / ar;
+  const pre = SIZE_PRESETS.find((x) => x.key === d.prep.preset);
+  return { w, h: hgt, ar, area: w * hgt, label: `${pre ? `${pre.label} · ` : ""}${Math.round(w)} × ${Math.round(hgt)} mm` };
+}
+
+/** The shelf: every print on edge in a sideways row (shelf.js), with sorting
+ *  and a folder filter above it. */
+function menuShelf(screen) {
+  const holder = h("div", { class: "shelf-holder" }, loader("loading projects", true));
+  const sortKey = SORTS[pref("sort", "recent")] ? pref("sort", "recent") : "recent";
+  const folderKey = pref("shelfFolder", "*");
+  const tools = h("div", { class: "shelf-tools" });
+  screen.append(pane("ctrl",
+    h("div", { class: "home-bar" }, head("saved prints"), projectViewChips("shelf")),
+    tools,
+    holder,
+    h("button", { class: "btn wide gap-top", type: "button", onclick: newProject }, "+ new project"),
+    head("files"),
+    h("button", { class: "btn wide", onclick: () => backupAllProjects() }, "back up all projects (.zip)"),
+    h("button", { class: "btn wide gap-top", onclick: () => zipPicker.click() }, "import a project or a backup (.zip)")));
+
+  store.listProjects().then((raw) => {
+    const recs = raw.map((r) => ({ ...r, data: sanitizeProject(r.data) }));
+    if (!recs.length) {
+      holder.replaceChildren(h("p", { class: "meta shelf-empty" }, "nothing saved yet - projects you start are kept on this phone."));
+      return;
+    }
+    const folders = allFolders(recs.map((r) => r.data.group).filter(Boolean));
+    tools.replaceChildren(
+      chipGroup(Object.entries(SORTS).map(([key, x]) => ({ key, label: x.label })), sortKey,
+        (k) => { setPref("sort", k); render(); }),
+      folders.length ? chipGroup([{ key: "*", label: "all" }, ...folders.map((f) => ({ key: f, label: f.replaceAll("/", " › ") })),
+        { key: "", label: "no folder" }], folderKey, (k) => { setPref("shelfFolder", k); render(); }) : "");
+    // "*" = everything (also when the remembered folder is gone), "" = not in a folder, else a folder and its sub-folders
+    const want = folderKey === "" || folders.includes(folderKey) ? folderKey : "*";
+    const inFolder = (g = "") => want === "*" || (want === "" ? !g : g === want || g.startsWith(`${want}/`));
+    const shown = recs.filter((r) => inFolder(r.data.group || "")).sort(SORTS[sortKey].fn);
+    if (!shown.length) {
+      holder.replaceChildren(h("p", { class: "meta shelf-empty" }, "no prints in this folder."));
+      return;
+    }
+    const items = shown.map((r) => {
+      const d = r.data, size = printSize(d), next = STAGES.find((st) => d.status[st] !== COMPLETE);
+      const when = (r.modified || "").slice(0, 10);
+      return {
+        id: r.id, name: d.name, size: size.label,
+        sub: [when, next ? `next: ${STAGE_LABELS[next].toLowerCase()}` : "complete", d.group ? folderLeaf(d.group) : null].filter(Boolean).join(" · "),
+        pips: STAGES.map((st) => [STAGE_LABELS[st], d.status[st] === COMPLETE]),
+        hexes: d.solve.filaments.map((f) => f.hex),
+        aspect: Math.max(0.3, Math.min(3, size.ar)).toFixed(3),
+        front: async () => (await store.getFile(r.id, "face")) || r.thumb,
+        back: () => store.getFile(r.id, "backface"),
+      };
+    });
+    const lastId = pref("shelfAt", "");
+    const shelf = createShelf(items, {
+      open: (id) => { setPref("shelfAt", id); openProject(id); },
+      more: (id) => projectActions(shown.find((r) => r.id === id), folders),
+    }, { start: Math.max(0, items.findIndex((x) => x.id === lastId)) });
+    disposers.push(() => shelf.destroy());
+    holder.replaceChildren(shelf.el);
+  }).catch((err) => {
+    console.error(err);
+    holder.replaceChildren(h("p", { class: "meta" }, "couldn't read saved projects on this browser."));
+  });
+}
+
+/** The long-press / ⋯ sheet for one project. */
+function projectActions(rec, folders) {
+  if (!rec) return;
+  actionSheet({ title: rec.data.name, actions: [
+    ["open", null, () => openProject(rec.id)],
+    ["rename", null, async () => {
+      const next = prompt("Project name", rec.data.name);
+      if (!next || !next.trim()) return;
+      rec.data.name = next.trim().slice(0, 120);
+      await store.saveProject(rec.data);
+      render();
+    }],
+    ["move to a folder", rec.data.group ? `now in ${rec.data.group.replaceAll("/", " › ")}` : null, () => folderSheet({
+      title: rec.data.name, folders, current: rec.data.group,
+      onPick: async (g) => { await store.setGroup(rec.id, g); render(); } })],
+    ["save as .zip", "to move it to the Mac or another phone", () => exportProjectZip(rec.id)],
+    ["delete", "from this phone, for good", async () => {
+      if (!confirm(`Delete "${rec.data.name}" from this phone? This can't be undone.`)) return;
+      await store.deleteProject(rec.id);
+      render();
+    }],
+  ] });
+}
+
+// ---------------------------------------------------------------- dev
+/** Dev: defaults for new projects, notes both ways, versions and the changelog. */
+function menuDev(screen) {
+  const notes = h("textarea", { class: "dev-notes-input", placeholder: "ideas, bugs, things to change: Claude reads these when you share them",
+    oninput: (e) => setPref("notesForClaude", e.target.value) });
+  notes.value = pref("notesForClaude", "");
+  const copyNotes = async () => {
+    const text = `HueLite notes for Claude (${new Date().toISOString().slice(0, 10)}, v${APP_VERSION})\n\n${notes.value}`;
+    try { await navigator.clipboard.writeText(text); toast("copied - paste it to Claude"); }
+    catch {
+      const a = h("a", { href: URL.createObjectURL(new Blob([text], { type: "text/plain" })), download: "huelite-notes-for-claude.txt" });
+      a.click();
+    }
+  };
+  const newDefaults = (() => { try { return JSON.parse(pref("newDefaults", "{}")) || {}; } catch { return {}; } })();
+  const setDefault = (k, v) => { newDefaults[k] = v; setPref("newDefaults", JSON.stringify(newDefaults)); };
+  const storage = h("span", {}, "…");
+  navigator.storage?.estimate?.().then((e) => { storage.textContent = `${(e.usage / 1e6).toFixed(0)} MB used of ${(e.quota / 1e9).toFixed(1)} GB`; })
+    .catch(() => { storage.textContent = "unknown"; });
+  const count = h("span", {}, "…");
+  store.listProjects().then((r) => { count.textContent = String(r.length); }).catch(() => {});
+
+  screen.append(pane("ctrl",
+    head("this build"),
+    kv([["version", `${APP_VERSION} · ${VERSIONS[0].name}`], ["build", __BUILD__], ["projects", count], ["storage", storage]]),
+
+    head("new projects start with"),
+    h("p", { class: "meta" }, "size"),
+    chipGroup([...SIZE_PRESETS.map((x) => ({ key: x.key, label: x.label.replace(/^The /, "") })), { key: "custom", label: "custom 200 mm" }],
+      newDefaults.preset || "signature", (k) => setDefault("preset", k)),
+    h("p", { class: "meta gap-top" }, "corners"),
+    chipGroup([0, 3, 6].map((r) => ({ key: r, label: r ? `rounded ${r} mm` : "square" })), newDefaults.corners ?? 3, (k) => setDefault("corners", k)),
+    h("p", { class: "meta gap-top" }, "front branding"),
+    chipGroup([{ key: true, label: "on" }, { key: false, label: "off" }], newDefaults.brand ?? true, (k) => setDefault("brand", k)),
+
+    head("app"),
+    h("button", { class: "btn wide", type: "button", onclick: async () => {
+      if (!confirm("Remake every shelf picture? They come back as you open each project.")) return;
+      const recs = await store.listProjects();
+      await Promise.all(recs.flatMap((r) => ["face", "backface", "side"].map((n) => store.deleteFile(r.id, n))));
+      toast("shelf pictures cleared");
+    } }, "clear shelf and album pictures"),
+    h("button", { class: "btn wide gap-top", type: "button", onclick: () => menuGo("settings") }, "sound, motion and gestures ›"),
+
+    head("notes for Claude"),
+    notes,
+    h("button", { class: "btn wide gap-top", type: "button", onclick: copyNotes }, "copy notes to send to Claude"),
+    h("p", { class: "meta hint" }, "kept on this phone as you type."),
+
+    head("notes from Claude"),
+    CLAUDE_NOTES.map((n) => h("div", { class: "dev-note" }, h("b", {}, n.title), h("span", { class: "meta" }, n.body))),
+
+    head("versions and changes"),
+    VERSIONS.map((v) => h("div", { class: `dev-version${v.current ? " current" : ""}` },
+      h("h3", {}, h("span", {}, `${v.v} · ${v.name}${v.current ? "  (current)" : ""}`), h("span", { class: "meta" }, v.dates)),
+      h("ul", {}, v.changes.map((c) => h("li", {}, c))))),
+  ));
+}
+
 // ---------------------------------------------------------------- main menu
 let menuPage = "main";    // main | new | projects | settings | help | about
 
@@ -1241,6 +1445,7 @@ const MENU_HEAD = {
   settings: ["Settings", "sound, motion and gestures"],
   help: ["Help", "how HueLite works"],
   about: ["About", "version and privacy"],
+  dev: ["Dev", "settings, notes, versions"],
 };
 
 function menuGo(page) {
@@ -1281,7 +1486,8 @@ function menuMain(screen) {
       menuTile("Import .zip", () => zipPicker.click()),
       menuTile("Settings", () => menuGo("settings")),
       menuTile("Help", () => menuGo("help")),
-      menuTile("About", () => menuGo("about"))));
+      menuTile("About", () => menuGo("about")),
+      menuTile("Dev", () => menuGo("dev"))));
   list.querySelectorAll(".menu-item, .menu-tiles").forEach((el, i) => el.style.setProperty("--i", String(i)));
 
   screen.append(
@@ -1863,6 +2069,7 @@ async function saveSolved() {
       .then((blob) => blob && store.putFile(app.project.id, "side", blob)).catch(() => {});
     const top = canvasOf(mesh.renderTop({ heights, w, h: hh, lut, mask: app.prepped.mask, layerH: lh,
       baseMm: baseLayers * lh, cellMm: app.project.prep.physical_width_mm / w, shaded: false }));
+    faceBlob(top, app.prepped.mask).then((b) => b && store.putFile(app.project.id, "face", b)).catch(() => {});
     await persistNow(await thumbBlob(top));
   }
 }
@@ -1871,6 +2078,7 @@ async function saveSolved() {
 // Line art for the plate side: a gallery of the single-ink designs (engine/lineart.js)
 // plus the built-in topo lines, then seed, line weight, info block, colour
 // and thickness. Export shows the result and builds it.
+let backFaceTimer = 0;
 let artFilter = "All";        // gallery tab on the Back stage
 const seedHistory = [];       // "↶ previous" steps back through this visit's picks
 
@@ -1906,6 +2114,10 @@ function renderBackStage(screen, action) {
       const img = backart.backPreview(shown, s.filaments[0].hex, plan.hex);
       canvas.width = img.width; canvas.height = img.height;
       canvas.getContext("2d").putImageData(img, 0, 0);
+      // the shelf shows this back; saved a moment after the last change
+      clearTimeout(backFaceTimer);
+      const id = app.project.id, gridMask = app.prepped.mask && img.width === app.prepped.w ? app.prepped.mask : null;
+      backFaceTimer = setTimeout(() => faceBlob(canvas, gridMask).then((b) => b && store.putFile(id, "backface", b)).catch(() => {}), 900);
       const lined = back.enabled && back.pattern !== "plain" && art.thinnest < Infinity;
       const v = lineart.thinnestVerdict(art.thinnest);
       lineCheck.hidden = !lined;

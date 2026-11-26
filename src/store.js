@@ -78,7 +78,7 @@ export async function getProject(id) {
 export async function deleteProject(id) {
   await tx(["projects", "files"], "readwrite", (p, f) => {
     p.delete(id);
-    for (const name of ["source", "prepped", "solved", "side"]) f.delete(`${id}/${name}`);
+    for (const name of ["source", "prepped", "solved", "side", "face", "backface"]) f.delete(`${id}/${name}`);
   });
 }
 

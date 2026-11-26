@@ -237,6 +237,28 @@ artwork; colours come in through CSS variables).
   raised 0.4 mm on the rim's bottom edge in the most contrasting filament ("Front branding" part in Studio).
   It needs a raised rim at least 5 mm wide, and gives way to the art border.
 
+## Projects shelf
+
+Projects opens on the **shelf**: every print stands on edge in a sideways row, showing its real front and back
+and its layer colours along the edge. Swipe to move along it. The print in the middle comes forward and turns
+slowly, and its name, size, progress and filaments show underneath.
+
+- **Tap** the middle print (or "flip") to turn it over; tap a side one to bring it to the middle.
+- **Hold** it, or tap ⋯, for open, rename, move, zip and delete.
+- **Drag the scrubber** under it to fly through a long collection.
+- **Sort** by recent, a–z, size or progress, and **filter** by folder (sub-folders included).
+- The light behind takes the middle print's colours and brightens with swipe speed. The sounds are low, soft
+  ticks from a pentatonic scale, so a fast swipe plays a loose low tune rather than one repeated click.
+
+The front picture is saved when you finish Solve, and the back when Back draws. Older projects show their square
+thumbnail and a blank back until they are opened. "list" and "album" are still there for folder work.
+
+## Dev page
+
+Main menu › Dev: the version and build, storage used, defaults for new projects (size, corners, front
+branding), notes for Claude (kept on the phone, with a copy button), notes from Claude, and a short changelog per
+version (src/devinfo.js).
+
 ## Moving between stages
 
 The stepper and swipes go to any stage that is open. Changing a setting in an earlier stage puts the

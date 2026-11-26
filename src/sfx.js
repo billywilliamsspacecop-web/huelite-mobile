@@ -155,6 +155,26 @@ const LIB = {
     tone(t + 0.1, { f: 150, type: "square", dur: 0.09, vol: 0.065, lp: 700 });
   } },
 
+  // ---- the projects shelf: low and soft, never the same twice in a row.
+  // A pentatonic scale down around A2, picked by position plus a little
+  // chance, so a fast swipe walks a loose low melody instead of one tick.
+  shelfTick: { gap: 55, fn(t, { i = 0, speed = 0 } = {}) {
+    const steps = [0, 3, 5, 7, 10, 12];
+    const m = 45 + steps[(i * 2 + Math.floor(Math.random() * 2)) % steps.length];
+    const v = 0.035 + 0.035 * clamp01(speed);
+    tone(t, { f: hz(m), to: hz(m) * 0.97, type: "triangle", dur: 0.12, vol: v, lp: 520, a: 0.006, det: (Math.random() - 0.5) * 18 });
+    noise(t, { dur: 0.03, vol: v * 0.5, type: "lowpass", f: 420, a: 0.002 });
+  } },
+  shelfSettle: { gap: 260, fn(t, i = 0) {
+    const root = 43 + [0, 2, 5, 7][i % 4];
+    tone(t, { f: hz(root), type: "sine", dur: 0.42, vol: 0.06, lp: 400, a: 0.02 });
+    tone(t + 0.05, { f: hz(root + 7), type: "triangle", dur: 0.34, vol: 0.03, lp: 600, a: 0.02 });
+  } },
+  shelfFlip: { gap: 220, fn(t) {
+    noise(t, { dur: 0.28, vol: 0.05, f: 220, to: 900, q: 1.4, a: 0.05 });
+    tone(t, { f: 98, to: 147, type: "triangle", dur: 0.3, vol: 0.05, lp: 500, a: 0.03 });
+  } },
+
   // ---- finishing
   done: { gap: 200, fn(t) {
     tone(t, { f: hz(base + 12), dur: 0.08, vol: 0.075 });
@@ -171,7 +191,7 @@ const LIB = {
 
 // ---------------------------------------------------------------- API
 let menu = false;                        // on the main menu only SELECT_OK may sound
-const MENU_OK = new Set(["select", "on"]);
+const MENU_OK = new Set(["select", "on", "shelfTick", "shelfSettle", "shelfFlip"]);
 
 /** Play a named sound. Cheap to call often: it rate-limits itself. `force`
  *  skips the menu rule (the demo). */
