@@ -1098,7 +1098,7 @@ async function sideThumbFor(rec) {
   const d = rec.data, lh = d.solve.layer_height_mm;
   const { lut } = solve.buildLut(d.solve.filaments, lh, d.solve.band_mode || "solid");
   return renderSideThumb({ heights: solved.heights, w: solved.w, h: solved.h, mask: prepped.mask || null, lut,
-    layerH: lh, baseMm: d.solve.base_layers * lh, physicalW: d.prep.physical_width_mm, maxCols: 320 });
+    layerH: lh, baseMm: d.solve.base_mm || d.solve.base_layers * lh, physicalW: d.prep.physical_width_mm, maxCols: 320 });
 }
 let sideQueue = Promise.resolve();   // one GL context at a time
 
@@ -1680,12 +1680,25 @@ async function commitPrep(to = "solve") {
 }
 
 // ---------------------------------------------------------------- solve
+/** The base in layers: the base depth chosen in Solve, raised (newer projects)
+ *  until the whole print is thickness.total_mm tall and its thinnest spot,
+ *  which is just the base, is at least thickness.min_mm. The base prints in
+ *  slot 1 under everything, so the colours on the front don't change. */
+function baseLayersFor(s) {
+  const lh = s.layer_height_mm, t = s.thickness || {};
+  const stack = s.filaments.reduce((n, f) => n + (f.band_layers | 0), 0);
+  let n = Math.max(2, s.base_layers | 0);
+  if (t.min_mm) n = Math.max(n, Math.ceil(t.min_mm / lh - 1e-6));
+  if (t.total_mm) n = Math.max(n, Math.ceil(t.total_mm / lh - 1e-6) - stack);
+  return n;
+}
+
 function solveSettings() {
   const s = app.project.solve;
   const lh = s.layer_height_mm;
   return {
     s, lh,
-    baseLayers: Math.max(2, s.base_layers | 0),
+    baseLayers: baseLayersFor(s),
     mode: s.band_mode || "solid",
     mm: app.project.prep.physical_width_mm,
   };
@@ -1804,7 +1817,7 @@ function renderSolve(screen, action) {
     const mode = app.project.prep.shape?.mode || "rect";
     readout.replaceChildren(kv([
       ["total", `${t.total_layers} layers · ${t.total_mm.toFixed(2)} mm`],
-      ["base", `${t.base_mm.toFixed(2)} mm (${baseLayers} layers)`],
+      ["base", `${t.base_mm.toFixed(2)} mm (${baseLayers} layers) · the thinnest spot`],
       ["outline", app.prepped.mask ? `${shape.MODE_LABELS[mode]} (${(shape.coverage(app.prepped.mask) * 100).toFixed(0)}% of crop)` : "rectangle"],
       ["edge", edge],
       ["rigidity", solve.rigidityNote(t.base_mm, t.base_mm, mm)],
@@ -1942,6 +1955,16 @@ function renderSolve(screen, action) {
   let filEl = filTable();
   const refitTable = () => { const fresh = filTable(); filEl.replaceWith(fresh); filEl = fresh; };
 
+  s.thickness = s.thickness || { total_mm: null, min_mm: null };
+  /** A thickness target: a number, or empty for off. */
+  const thickField = (label, key, suggest) => h("label", { class: "field" }, label,
+    h("input", { class: "val", type: "number", inputmode: "decimal", step: "0.5", min: "0", max: "60",
+      placeholder: `off (${suggest})`, value: s.thickness[key] ?? "", onchange: (e) => {
+        const v = parseFloat(e.target.value);
+        s.thickness[key] = Number.isFinite(v) && v > 0 ? Math.min(60, v) : null;
+        e.target.value = s.thickness[key] ?? "";
+        queue();
+      } }));
   const borderWidth = numField("rim width (mm)", s.border.width_mm ?? 3, { step: "0.5", min: 0.4, max: 15,
     onchange: (v) => { s.border.width_mm = v; queue(); } });
   const frameSlot = numField("frame colour (slot)", s.border.frame_slot ?? 1, { step: "1", min: 1, max: s.filaments.length,
@@ -1995,10 +2018,16 @@ function renderSolve(screen, action) {
 
       readoutBeside ? null : [head("summary"), readout],
 
+      head("thickness"),
+      thickField("total height (mm)", "total_mm", 10),
+      thickField("thinnest spot at least (mm)", "min_mm", 4.5),
+      h("p", { class: "meta hint" }, "the base under everything (slot 1) grows to reach these. it doesn't change the colours, " +
+        "but uses more filament: the print feels solid and stays flat. clear a box to turn it off."),
+
       head("layers"),
       numField("layer height (mm)", s.layer_height_mm, { step: "0.02", min: 0.04, max: 0.3, fmt: (v) => v.toFixed(2),
         onchange: (v) => { s.layer_height_mm = v; queue(); } }),
-      numField("base depth (mm)", +(s.base_layers * s.layer_height_mm).toFixed(2), { step: "0.2", min: 0.4, max: 8,
+      numField("base depth at least (mm)", +(s.base_layers * s.layer_height_mm).toFixed(2), { step: "0.2", min: 0.4, max: 8,
         fmt: (v) => v.toFixed(2),
         onchange: (v) => { s.base_layers = Math.max(2, solve.layersForMm(v, s.layer_height_mm)); queue(); } })),
   );
@@ -2053,7 +2082,6 @@ async function saveSolved() {
   const { s, lh, baseLayers, mode } = solveSettings();
   {
     app.solved = solveImage(app.prepped);
-    s.base_layers = baseLayers;
     s.base_mm = +(baseLayers * lh).toFixed(3);
     s.max_layers = app.solved.lut.length - 1;
     s.band_mode = mode;

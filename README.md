@@ -233,6 +233,9 @@ artwork; colours come in through CSS variables).
 - **Corners** (Prep › corners): square, rounded 3 mm (new projects) or 6 mm. Square corners are where peeling starts.
 - **Rim** (Solve › border): new projects get a 7 mm rim at 100% of the print's height, which holds the edges
   flat. The rim height slider goes down to "to its slot's band", the old behaviour (older projects keep it).
+- **Thickness** (Solve › thickness): new projects are 10 mm tall in total, and no spot is thinner than 4.5 mm.
+  The base (slot 1, under everything) grows to reach both, so the front colours don't change. A Brick slices at
+  about 41 g and 4 h 10 min. Clear either box to turn it off. Older projects keep their base.
 - **Front branding** (Back › front branding, on for new projects): "PRINT-BRICK" and the three-bar logo,
   raised 0.4 mm on the rim's bottom edge in the most contrasting filament ("Front branding" part in Studio).
   It needs a raised rim at least 5 mm wide, and gives way to the art border.

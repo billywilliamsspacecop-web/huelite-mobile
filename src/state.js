@@ -106,6 +106,9 @@ export function defaultData(name) {
       dither_amount: 1.0,
       band_mode: "blend",          // translucent blend: better results than solid bands in the user's prints
       slope_mm_per_layer: 0.05,      // foundations
+      // thickness: the base (slot 1, under everything) grows until the print is total_mm tall and
+      // no spot is thinner than min_mm. null = off (older projects keep their base as it was)
+      thickness: { total_mm: 10, min_mm: 4.5 },
       colours_seeded: false,
       colours_auto: false,   // colours were picked by the fit, so they follow the stack
       // height: the rim's share of the print's height (1 = full height, which holds the edges down);
@@ -208,6 +211,11 @@ export function sanitizeProject(raw) {
     band_mode: pick(so.band_mode, ["solid", "blend"], "blend"),
     slope_mm_per_layer: num(so.slope_mm_per_layer, 0.05, 0, 5),
     colours_seeded: so.colours_seeded === true,
+    thickness: (() => {
+      const t = obj(so.thickness);
+      const mm = (v) => (v == null || v === "" ? null : +num(v, 0, 0, 60).toFixed(1));
+      return { total_mm: mm(t.total_mm) || null, min_mm: mm(t.min_mm) || null };
+    })(),
     colours_auto: so.colours_auto === true,
     border: { ...bs.border, ...bo,
       enabled: bo.enabled !== false,

@@ -10,6 +10,7 @@ export const VERSIONS = [
     changes: [
       "Size presets: The Brick 75 × 115, The Block 150 × 150, The Signature 200 × 200 mm",
       "Rounded corners and a 7 mm full-height rim by default, against corner and edge peeling",
+      "Solid prints: 10 mm total, thinnest spot at least 4.5 mm (the base grows to fit)",
       "PRINT-BRICK name and logo raised on the front border",
       "Projects shelf: swipe through prints in 3D, front and back, sort and filter",
       "Stage switching: later stages stay reachable and update when you continue",
@@ -69,8 +70,12 @@ export const CLAUDE_NOTES = [
       "With a white top it prints in your darkest slot.",
   },
   {
+    title: "Thickness",
+    body: "New projects are 10 mm tall with the thinnest spot at least 4.5 mm (Solve › thickness). The extra is base in slot 1, " +
+      "so colours don't change. A Brick sliced at about 41 g and 4 h 10 min. Lower the total if that's more than you want.",
+  },
+  {
     title: "Waiting on you",
-    body: "Prices for The Brick, The Block and The Signature (they can show on Export once set). " +
-      "And \"no thinner than 5 mm\": did that mean the whole print's thickness, or the narrowest part of the shape?",
+    body: "Prices for The Brick, The Block and The Signature (they can show on Export once set).",
   },
 ];

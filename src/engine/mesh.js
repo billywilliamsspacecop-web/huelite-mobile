@@ -283,6 +283,10 @@ export function renderOblique({ heights, w, h, lut, mask, baseHex, layerH, baseM
 export function estimates({ heights, w, h, mask, filaments, layerH, baseLayers, physicalW,
                             pricePerKg = 25, bandMode = "solid", back = null, extraSwitches = 0 }) {
   const baseMm = baseLayers * layerH;
+  // a deep base is not solid plastic: Studio prints its bottom shell solid
+  // and fills the rest sparsely (~15% plus walls), so count about 30% of it
+  const SOLID_MM = 1.2, FILL = 0.3;
+  const baseEff = Math.min(baseMm, SOLID_MM) + Math.max(0, baseMm - SOLID_MM) * FILL;
   const cell = physicalW / w, area = cell * cell;
   const perSlot = {};
   for (const band of bandBounds(filaments)) {
@@ -290,7 +294,7 @@ export function estimates({ heights, w, h, mask, filaments, layerH, baseLayers, 
     for (let i = 0; i < heights.length; i++) {
       if (mask && !mask[i]) continue;
       const v = heights[i];
-      if (band.start_h < 0) vol += area * (baseMm + Math.min(v, band.end_h) * layerH);
+      if (band.start_h < 0) vol += area * (baseEff + Math.min(v, band.end_h) * layerH);
       else if (v > band.start_h) vol += area * (Math.min(v, band.end_h) - band.start_h) * layerH;
     }
     perSlot[band.slot] = (perSlot[band.slot] || 0) + vol;
