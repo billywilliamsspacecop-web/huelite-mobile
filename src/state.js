@@ -224,6 +224,7 @@ export const app = {
   proxy: null,          // same, small, for the live solve
   solved: null,         // { heights, w, h, lut } at full prepped size
   stage: "prep",
+  reach: 0,             // furthest stage index this project could open this session
 };
 
 export function canOpen(stage) {
@@ -232,7 +233,21 @@ export function canOpen(stage) {
   return !!app.project && app.project.status[req] === COMPLETE;
 }
 
+/** Remember how far this project has got, before an edit locks later stages,
+ *  so the stepper can offer to bring them up to date instead of locking them. */
+export function noteReach() {
+  if (!app.project) return;
+  STAGES.forEach((s, i) => { if (canOpen(s)) app.reach = Math.max(app.reach, i); });
+}
+
+/** A stage that was open before an earlier stage changed: its settings are
+ *  kept, it only needs the earlier stages re-run to open again. */
+export function isStale(stage) {
+  return !!app.project && !canOpen(stage) && STAGES.indexOf(stage) <= app.reach;
+}
+
 export function setStatus(stage, value) {
+  noteReach();
   app.project.status[stage] = value;
   app.project.modified = now();
   // Changing an earlier stage invalidates everything after it.

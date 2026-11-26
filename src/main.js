@@ -1,4 +1,4 @@
-import { allFolders, app, canOpen, COMPLETE, DEFAULT_FILAMENTS, defaultData, folderLeaf, folderName, folderParent,
+import { allFolders, app, canOpen, COMPLETE, isStale, noteReach, DEFAULT_FILAMENTS, defaultData, folderLeaf, folderName, folderParent,
          joinFolder, MOBILE_OUTPUT_PX, PENDING, sanitizeProject, setStatus, STAGE_LABELS, STAGE_REQUIRES,
          STAGES } from "./state.js";
 import { ASPECTS, createCropper, loadPhoto } from "./crop.js";
@@ -216,6 +216,7 @@ async function startFromFile(e) {
       app.sourceHasAlpha = await sourceHasAlpha(bmp);
       const name = (file.name || "photo").replace(/\.[^.]+$/, "");
       app.project = defaultData(name);
+      app.reach = 0;
       app.project.source = { filename: file.name, width_px: bmp.width, height_px: bmp.height };
       // a transparent PNG almost always means "cut it out"
       if (app.sourceHasAlpha) app.project.prep.shape.mode = "alpha";
@@ -315,6 +316,7 @@ async function openProject(id) {
     app.sourceFile = file;
     app.sourceHasAlpha = await sourceHasAlpha(bmp);
     app.project = sanitizeProject(rec.data);
+    app.reach = 0;
     app.prepped = app.proxy = app.solved = null;
     const prepped = app.project.status.prep === COMPLETE ? await store.getFile(id, "prepped") : null;
     if (prepped) {
@@ -432,8 +434,8 @@ async function importProjectBytes(bytes) {
       if (data.id) data.name = `${data.name} (copy)`;
       data.id = uuid();
     }
-    if (!prepped) data.status = { prep: PENDING, solve: PENDING, export: PENDING };
-    else if (!solved) data.status = { ...data.status, solve: PENDING, export: PENDING };
+    if (!prepped) data.status = { prep: PENDING, solve: PENDING, back: PENDING, export: PENDING };
+    else if (!solved) data.status = { ...data.status, solve: PENDING, back: PENDING, export: PENDING };
     await store.putFile(data.id, "source", source);
     if (prepped) await store.putFile(data.id, "prepped", prepped);
     if (solved) await store.putFile(data.id, "solved", solved);
@@ -526,6 +528,7 @@ function render() {
   // one-shot: resizes and rebuilds that follow don't replay the entrance
   if (enter) root.dataset.enter = enter; else delete root.dataset.enter;
   enter = null;
+  noteReach();
   root.dataset.stage = app.stage;
   document.documentElement.dataset.stage = app.stage;
   sfx.setStage(app.stage);
@@ -578,8 +581,8 @@ function render() {
     const at = STAGES.indexOf(app.stage);
     disposers.push(attachSwipe(body, {
       drag: screen,
-      canGo: (dir) => !!STAGES[at + dir] && canOpen(STAGES[at + dir]),
-      onGo: (dir) => go(STAGES[at + dir]),
+      canGo: (dir) => !!STAGES[at + dir] && (canOpen(STAGES[at + dir]) || isStale(STAGES[at + dir])),
+      onGo: (dir) => (canOpen(STAGES[at + dir]) ? go(STAGES[at + dir]) : catchUp(STAGES[at + dir])),
       onBlocked: (dir) => {
         const to = STAGES[at + dir];
         if (to && !canOpen(to)) { sfx.play("blocked"); toast(`Finish ${STAGE_LABELS[STAGE_REQUIRES[to]]} first`); }
@@ -591,14 +594,58 @@ function render() {
 function renderStepper() {
   return h("nav", { class: "stepper" }, STAGES.map((s, i) => {
     const done = app.project?.status[s] === COMPLETE;
-    const locked = !canOpen(s);
-    const cls = ["step", s === app.stage && "active", done && "done", locked && "locked"]
+    const stale = isStale(s);
+    const locked = !canOpen(s) && !stale;
+    const cls = ["step", s === app.stage && "active", done && "done", stale && "stale", locked && "locked"]
       .filter(Boolean).join(" ");
-    return h("button", { class: cls, onclick: () => {
+    return h("button", { class: cls, title: stale ? "needs update" : null, onclick: () => {
       if (locked) { sfx.play("blocked"); return toast(`Finish ${STAGE_LABELS[STAGE_REQUIRES[s]]} first`); }
+      if (stale) return catchUp(s);
       go(s);
     } }, h("span", { class: "num" }, `0${i + 1}`), STAGE_LABELS[s]);
   }));
+}
+
+/** The first stage that has changes not carried forward yet. */
+const firstPending = () => STAGES.find((s) => app.project.status[s] !== COMPLETE);
+
+/** Jump to a stage that needs the earlier ones re-run: say what will be
+ *  redone, then redo it with the settings already chosen and go there. */
+function catchUp(to) {
+  const from = firstPending();
+  const at = STAGES.indexOf(from), ti = STAGES.indexOf(to);
+  if (at < 0 || at >= ti) return go(to);
+  const redo = STAGES.slice(at + 1, ti).map((s) => STAGE_LABELS[s]);
+  const what = [`apply your ${STAGE_LABELS[from]} changes`, redo.length ? `redo ${redo.join(" and ")}` : null]
+    .filter(Boolean).join(", then ");
+  actionSheet({
+    title: `${STAGE_LABELS[from]} has changed`,
+    actions: [
+      [`update and go to ${STAGE_LABELS[to]}`, `This will ${what}. Your ${[...redo, STAGE_LABELS[to]].join(", ")} settings are kept.`,
+        () => applyThrough(from, to)],
+      [`stay on ${STAGE_LABELS[app.stage]}`, null, () => {}],
+    ],
+  });
+}
+
+async function applyThrough(from, to) {
+  if (from === "prep") {
+    if (app.stage !== "prep" || !cropper) { go("prep"); return toast("Finish Prep first"); }
+    return commitPrep(to);
+  }
+  if (from === "solve") {
+    if (!app.prepped) { go("solve"); return; }
+    return commitSolve(to);
+  }
+  setStatus(from, COMPLETE);
+  await persistNow();
+  go(to);
+}
+
+/** Said once when an edit puts later, already-done stages out of date. */
+function warnLater(stage) {
+  const later = STAGES.slice(STAGES.indexOf(stage) + 1, app.reach + 1).map((s) => STAGE_LABELS[s]);
+  if (later.length) toast(`${later.join(", ")} will update when you continue. Their settings are kept.`, 3200);
 }
 
 function refreshStepper() {
@@ -629,7 +676,7 @@ function renderPrep(screen, action) {
   p.shape = { ...shape.DEFAULT_SHAPE, ...(p.shape || {}) };
   if (!Array.isArray(p.shape.cuts)) p.shape.cuts = [];   // lasso loops, in photo coordinates
   const invalidate = () => {
-    if (app.project.status.prep === COMPLETE) { setStatus("prep", PENDING); refreshStepper(); }
+    if (app.project.status.prep === COMPLETE) { setStatus("prep", PENDING); refreshStepper(); warnLater("prep"); }
   };
 
   const cropHost = h("div");
@@ -943,7 +990,7 @@ function renderPrep(screen, action) {
 
   action.append(
     h("button", { class: "btn ghost", onclick: () => picker.click() }, "new photo"),
-    h("button", { class: "btn primary", onclick: commitPrep }, "next: solve  →"),
+    h("button", { class: "btn primary", onclick: () => commitPrep() }, "next: solve  →"),
   );
 }
 
@@ -1350,7 +1397,7 @@ function shapeVerdict(mode, m) {
   return `prints ${(cover * 100).toFixed(0)}% of the crop · checkered = no plate`;
 }
 
-async function commitPrep() {
+async function commitPrep(to = "solve") {
   if (!cropper) return;
   const p = app.project.prep;
   await busy("prepping…", async () => {
@@ -1380,6 +1427,7 @@ async function commitPrep() {
     await store.deleteFile(id, "side");
     const shown = mask ? canvasOf(checkered(mask, w, hh, prepped)) : out;
     await persistNow(await thumbBlob(shown));
+    if (STAGES.indexOf(to) > 1 && solveNow()) { await saveSolved(); return finishTo(to); }
     go("solve");
   }, { quiet: true });
 }
@@ -1448,7 +1496,7 @@ function renderSolve(screen, action) {
   let live = null;
 
   const invalidate = () => {
-    if (app.project.status.solve === COMPLETE) { setStatus("solve", PENDING); refreshStepper(); }
+    if (app.project.status.solve === COMPLETE) { setStatus("solve", PENDING); refreshStepper(); warnLater("solve"); }
   };
 
   /** One preview canvas for the current settings. */
@@ -1696,7 +1744,7 @@ function renderSolve(screen, action) {
 
   action.append(
     h("button", { class: "btn ghost", onclick: () => go("prep") }, "back to prep"),
-    h("button", { class: "btn primary", onclick: commitSolve }, "next: back  →"),
+    h("button", { class: "btn primary", onclick: () => commitSolve() }, "next: back  →"),
   );
   requestAnimationFrame(recompute);
 }
@@ -1716,13 +1764,33 @@ function fitColours() {
   s.colours_auto = true;
 }
 
-async function commitSolve() {
-  const { s, lh, baseLayers, mode } = solveSettings();
+async function commitSolve(to = "back") {
+  await busy("solving at full size…", async () => {
+    if (!solveNow()) return go("solve");
+    await saveSolved();
+    finishTo(to);
+  }, { quiet: true });
+}
+
+/** Re-run Back with its kept settings when going past it, then go. */
+async function finishTo(to) {
+  if (STAGES.indexOf(to) > STAGES.indexOf("back")) { setStatus("back", COMPLETE); await persistNow(); }
+  go(to);
+}
+
+/** The full-size solve; false (and a toast) when there is nothing to stack. */
+function solveNow() {
+  const { s } = solveSettings();
   if (s.filaments.reduce((n, f) => n + (f.band_layers | 0), 0) < 2) {
     toast("Give at least one filament some layers", 2400);
-    return;
+    return false;
   }
-  await busy("solving at full size…", async () => {
+  return true;
+}
+
+async function saveSolved() {
+  const { s, lh, baseLayers, mode } = solveSettings();
+  {
     app.solved = solveImage(app.prepped);
     s.base_layers = baseLayers;
     s.base_mm = +(baseLayers * lh).toFixed(3);
@@ -1741,8 +1809,7 @@ async function commitSolve() {
     const top = canvasOf(mesh.renderTop({ heights, w, h: hh, lut, mask: app.prepped.mask, layerH: lh,
       baseMm: baseLayers * lh, cellMm: app.project.prep.physical_width_mm / w, shaded: false }));
     await persistNow(await thumbBlob(top));
-    go("back");
-  }, { quiet: true });
+  }
 }
 
 // ---------------------------------------------------------------- back

@@ -225,6 +225,14 @@ list and the Back stage's colour choices use small spools.
 The spools and icons are drawn in `src/spool.js` (our own SVG, no Bambu
 artwork; colours come in through CSS variables).
 
+## Moving between stages
+
+The stepper and swipes go to any stage that is open. Changing a setting in an earlier stage puts the
+stages after it out of date. A toast says which ones, and their steps in the stepper get a dashed
+outline and ↻. Tapping one opens a sheet that says what will be redone ("apply your Prep changes, then
+redo Solve and Back") and does it in one go with the settings already chosen. Nothing is thrown away:
+each stage keeps its settings, so going back to tweak one thing and jumping forward again is quick.
+
 ## Main menu
 
 The old project list is now a **main menu** (`menuMain` in `main.js`): a hero
