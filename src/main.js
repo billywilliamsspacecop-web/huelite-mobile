@@ -344,6 +344,11 @@ function makeProxy(canvas, mask) {
 }
 
 async function openProject(id) {
+  // let a shelf picture being drawn finish first: it borrows app.project
+  facesStop = true;
+  await facesQueue;
+  facesStop = false;
+  facesMade.clear();
   await busy("opening…", async () => {
     const rec = await store.getProject(id);
     const file = await store.getFile(id, "source");
@@ -554,7 +559,67 @@ window.addEventListener("orientationchange", onResize);
 applyLayout(measureLayout());
 
 // ---------------------------------------------------------------- shell
+// ---- drawing another project's pictures while the menu is up: the stage
+// helpers read app.project, so it is swapped in for a moment and put back.
+// A render asked for meanwhile waits until it is back.
+let ghost = 0, renderPending = false, facesQueue = Promise.resolve(), facesStop = false;
+const facesMade = new Map();   // id -> Promise<{ front, back }>
+
+async function withProject(state, fn) {
+  const saved = { project: app.project, solved: app.solved, prepped: app.prepped, proxy: app.proxy };
+  ghost++;
+  try {
+    Object.assign(app, state);
+    return await fn();
+  } finally {
+    Object.assign(app, saved);
+    ghost--;
+    if (!ghost && renderPending) { renderPending = false; render(); }
+  }
+}
+
+/** A project's front and back for the shelf, drawn from its saved solve and
+ *  its Back settings, and kept so it is only drawn once. Projects from before
+ *  the shelf never had these saved. */
+function shelfFaces(rec) {
+  if (!facesMade.has(rec.id)) {
+    const job = facesQueue.then(async () => {
+      if (facesStop) return { front: null, back: null };
+      const [front0, back0] = await Promise.all([store.getFile(rec.id, "face"), store.getFile(rec.id, "backface")]);
+      if (front0 && back0) return { front: front0, back: back0 };
+      const [prepped, solved] = await Promise.all([store.getFile(rec.id, "prepped"), store.getFile(rec.id, "solved")]);
+      if (!prepped || !solved || facesStop) return { front: front0, back: back0 };
+      const d = sanitizeProject(rec.data), lh = d.solve.layer_height_mm;
+      const { lut } = solve.buildLut(d.solve.filaments, lh, d.solve.band_mode || "solid");
+      const mask = prepped.mask || null;
+      return withProject({ project: d, prepped: { mask, w: prepped.w, h: prepped.h }, proxy: null,
+                           solved: { heights: solved.heights, w: solved.w, h: solved.h, lut } }, async () => {
+        let front = front0, back = back0;
+        if (!front) {
+          const { baseLayers } = solveSettings();
+          const top = canvasOf(mesh.renderTop({ heights: solved.heights, w: solved.w, h: solved.h, lut, mask, layerH: lh,
+            baseMm: baseLayers * lh, cellMm: d.prep.physical_width_mm / solved.w, shaded: false }));
+          front = await faceBlob(top, mask);
+          if (front) await store.putFile(rec.id, "face", front);
+        }
+        if (!back) {
+          const bk = backSettings(), plan = backPlan(bk);
+          const art = await backart.renderBack(mesh.modelGrid(modelArgs()), { ...backArtOpts(bk), maxPixels: 600_000, minPx: 0.15 });
+          const shown = bk.enabled && plan.usable ? art : { ...art, field: new Float32Array(art.field.length) };
+          back = await faceBlob(canvasOf(backart.backPreview(shown, d.solve.filaments[0].hex, plan.hex)));
+          if (back) await store.putFile(rec.id, "backface", back);
+        }
+        return { front, back };
+      });
+    });
+    facesQueue = job.catch((err) => console.warn("shelf pictures for", rec.data?.name, err));
+    facesMade.set(rec.id, job.catch(() => ({ front: null, back: null })));
+  }
+  return facesMade.get(rec.id);
+}
+
 function render() {
+  if (ghost) { renderPending = true; return; }
   disposers.splice(0).forEach((fn) => fn());
   currentSheet?.close();
   currentSheet = null;
@@ -1336,8 +1401,8 @@ function menuShelf(screen) {
         pips: STAGES.map((st) => [STAGE_LABELS[st], d.status[st] === COMPLETE]),
         hexes: d.solve.filaments.map((f) => f.hex),
         aspect: Math.max(0.3, Math.min(3, size.ar)).toFixed(3),
-        front: async () => (await store.getFile(r.id, "face")) || r.thumb,
-        back: () => store.getFile(r.id, "backface"),
+        front: async () => (await shelfFaces(r)).front || r.thumb,
+        back: async () => (await shelfFaces(r)).back,
       };
     });
     const lastId = pref("shelfAt", "");
@@ -1417,6 +1482,7 @@ function menuDev(screen) {
       if (!confirm("Remake every shelf picture? They come back as you open each project.")) return;
       const recs = await store.listProjects();
       await Promise.all(recs.flatMap((r) => ["face", "backface", "side"].map((n) => store.deleteFile(r.id, n))));
+      facesMade.clear();
       toast("shelf pictures cleared");
     } }, "clear shelf and album pictures"),
     h("button", { class: "btn wide gap-top", type: "button", onclick: () => menuGo("settings") }, "sound, motion and gestures ›"),
