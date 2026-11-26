@@ -833,3 +833,6 @@ html[data-stage="prep"] .chip.on, html[data-stage="back"] .chip.on, html[data-st
 /* action sheet rows: the label, then its explanation underneath in plain case */
 .btn.action-btn { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 4px; text-align: left; padding: 12px 14px; }
 .btn.action-btn .meta { text-transform: none; letter-spacing: 0; font-weight: 400; line-height: 1.35; color: var(--muted); }
+.chips.presets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.chips.presets .chip { padding-left: 4px; padding-right: 4px; min-width: 0; }
+.chips.presets .two-line span { font-size: 10px; white-space: nowrap; }

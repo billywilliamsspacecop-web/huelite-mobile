@@ -225,6 +225,18 @@ list and the Back stage's colour choices use small spools.
 The spools and icons are drawn in `src/spool.js` (our own SVG, no Bambu
 artwork; colours come in through CSS variables).
 
+## Print-Brick sizes, rim and branding
+
+- **Size presets** (Prep › size): The Brick 75 × 115 mm, The Block 150 × 150 mm, The Signature 200 × 200 mm,
+  or custom. A preset fixes the crop's shape and the print width. Changing the width or the crop ratio by hand
+  switches to custom.
+- **Corners** (Prep › corners): square, rounded 3 mm (new projects) or 6 mm. Square corners are where peeling starts.
+- **Rim** (Solve › border): new projects get a 7 mm rim at 100% of the print's height, which holds the edges
+  flat. The rim height slider goes down to "to its slot's band", the old behaviour (older projects keep it).
+- **Front branding** (Back › front branding, on for new projects): "PRINT-BRICK" and the three-bar logo,
+  raised 0.4 mm on the rim's bottom edge in the most contrasting filament ("Front branding" part in Studio).
+  It needs a raised rim at least 5 mm wide, and gives way to the art border.
+
 ## Moving between stages
 
 The stepper and swipes go to any stage that is open. Changing a setting in an earlier stage puts the

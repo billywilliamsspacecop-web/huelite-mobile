@@ -534,3 +534,76 @@ function rasterKeep(polys, field, w, h) {
   for (let i = 0; i < out.length; i++) out[i] = inKept[i] ? field[i] : 0;
   return out;
 }
+
+// ---------------------------------------------------------------- front branding
+// "PRINT-BRICK" with the three-bar logo, standing up from the front of the
+// rim's bottom edge. Read from the front, so not mirrored.
+
+/** The brand's top face on grid = mesh.modelGrid(...): the text and logo,
+ *  clipped to the rim (the cells within rimMm of the outline). Returns the
+ *  same shape as renderRingTop, plus fits (false when the rim is too narrow
+ *  or the print too small for legible letters). */
+export async function renderBrandTop(grid, { rimMm, brand = BACK_DEFAULTS.brand, maxPixels = 2e6 }) {
+  const { cols, rows, cell, widthMm: W, heightMm: H } = grid;
+  const inside = grid.inside || new Uint8Array(cols * rows).fill(1);
+  const ringCells = rimCells(inside, cols, rows, Math.max(1, Math.ceil(rimMm / cell - 1e-9)));
+  const px = Math.max(0.05, Math.sqrt(W * H / maxPixels), cell / Math.max(1, Math.ceil(cell / 0.1)));
+  const w = Math.round(W / px), h = Math.round(H / px);
+  const fp = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const row = Math.min(rows - 1, Math.floor((y + 0.5) * px / cell));
+    for (let x = 0; x < w; x++) fp[y * w + x] = ringCells[row * cols + Math.min(cols - 1, Math.floor((x + 0.5) * px / cell))];
+  }
+  // letters: cap height is the rim width less a margin each side, at most 5 mm
+  const margin = 1.3, capMm = Math.min(5, rimMm - 2 * margin);
+  const field = new Float32Array(w * h);
+  const out = { field, fp, w, h, px, widthMm: W, heightMm: H, fits: false };
+  if (capMm < 2.4) return out;
+  const fontTpl = await loadBackFont();
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  const P = (mm) => mm / px;
+  const em = capMm / CAP;
+  ctx.font = fontTpl.replace("{px}", String(P(em)));
+  const textW = ctx.measureText(brand).width * px;
+  const L = BLOCK.logo, k = capMm / (3 * L.barH + 2 * L.gap);
+  const logoW = L.w * k, gap = capMm * 0.6, total = logoW + gap + textW;
+  if (total > W - 2 * (rimMm + 4)) return out;   // keep clear of the rounded corners
+  const x0 = (W - total) / 2, yTop = H - rimMm / 2 - capMm / 2;   // centred in the bottom rim
+  ctx.fillStyle = "#fff"; ctx.strokeStyle = "#fff"; ctx.lineJoin = "round"; ctx.lineWidth = P(2 * LOOK.emb);
+  const maxR = Math.max(...L.ratios);
+  L.ratios.forEach((ratio, i) => {
+    const bw = logoW * ratio / maxR;
+    ctx.fillRect(P(x0 + (logoW - bw) / 2), P(yTop + i * (L.barH + L.gap) * k), P(bw), P(L.barH * k));
+  });
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(brand, P(x0 + logoW + gap), P(yTop + capMm));
+  ctx.strokeText(brand, P(x0 + logoW + gap), P(yTop + capMm));
+  const d = ctx.getImageData(0, 0, w, h).data;
+  for (let i = 0; i < field.length; i++) field[i] = fp[i] ? d[i * 4 + 3] / 255 : 0;
+  out.fits = true;
+  return out;
+}
+
+function rimCells(m, w, h, widthPx) {
+  // the cells within widthPx of the outside (a plain erosion, like shape.rim)
+  const dist = new Int32Array(w * h).fill(1e9);
+  const q = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x;
+    if (!m[i]) continue;
+    if (x === 0 || y === 0 || x === w - 1 || y === h - 1 || !m[i - 1] || !m[i + 1] || !m[i - w] || !m[i + w]) { dist[i] = 1; q.push(i); }
+  }
+  for (let k = 0; k < q.length; k++) {
+    const i = q[k], d = dist[i];
+    if (d >= widthPx) continue;
+    const x = i % w;
+    for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) {
+      if (j >= 0 && j < m.length && m[j] && dist[j] > d + 1) { dist[j] = d + 1; q.push(j); }
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let i = 0; i < out.length; i++) out[i] = m[i] && dist[i] <= widthPx ? 1 : 0;
+  return out;
+}

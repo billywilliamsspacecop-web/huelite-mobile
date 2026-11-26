@@ -63,6 +63,23 @@ export function dilate(m, w, h, r) {
 }
 
 /** The band of the shape within widthPx of its outline. */
+/** The mask with its bounding rectangle's corners rounded to rPx (null mask =
+ *  the whole rectangle). Square corners are where a print starts to peel. */
+export function roundCorners(m, w, h, rPx) {
+  const r = Math.min(rPx, w / 2, h / 2);
+  if (!(r >= 1)) return m;
+  const out = m ? m.slice() : new Uint8Array(w * h).fill(1);
+  for (let y = 0; y < h; y++) {
+    const cy = y + 0.5, dy = cy < r ? r - cy : cy > h - r ? cy - (h - r) : 0;
+    if (!dy) continue;
+    for (let x = 0; x < w; x++) {
+      const cx = x + 0.5, dx = cx < r ? r - cx : cx > w - r ? cx - (w - r) : 0;
+      if (dx && dx * dx + dy * dy > r * r) out[y * w + x] = 0;
+    }
+  }
+  return out;
+}
+
 export function rim(m, w, h, widthPx) {
   const inner = erode(m, w, h, widthPx);
   const out = new Uint8Array(m.length);

@@ -63,6 +63,14 @@ export function uuid() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/** Print-Brick's three sizes. A preset fixes the crop's shape and the print's
+ *  width, so its height follows; the border and corners are the defaults below. */
+export const SIZE_PRESETS = [
+  { key: "brick", label: "The Brick", w: 75, h: 115 },
+  { key: "block", label: "The Block", w: 150, h: 150 },
+  { key: "signature", label: "The Signature", w: 200, h: 200 },
+];
+
 export function defaultData(name) {
   return {
     schema_version: 1,
@@ -79,6 +87,8 @@ export function defaultData(name) {
       flip_h: false,
       output_px: [MOBILE_OUTPUT_PX, MOBILE_OUTPUT_PX],
       physical_width_mm: 200.0,   // the user's usual size (Prep still trims it to fit the A1 plate)
+      preset: "signature",        // SIZE_PRESETS key, or "custom"
+      corner_radius_mm: 3,        // rounded corners: square corners are where a print starts to peel
       adjustments: {
         brightness: 0, contrast: 0, saturation: 0,
         denoise: 0, sharpen: 0, pixelize: 0, decimate: 0,
@@ -98,7 +108,9 @@ export function defaultData(name) {
       slope_mm_per_layer: 0.05,      // foundations
       colours_seeded: false,
       colours_auto: false,   // colours were picked by the fit, so they follow the stack
-      border: { enabled: true, width_mm: 3.0, mode: "raised", frame_slot: 1 },
+      // height: the rim's share of the print's height (1 = full height, which holds the edges down);
+      // null on older projects = up to the top of the frame slot's band
+      border: { enabled: true, width_mm: 7.0, mode: "raised", frame_slot: 1, height: 1 },
     },
     export: {
       mesh_mode: "banded_slabs",
@@ -113,6 +125,8 @@ export function defaultData(name) {
       // a band round the print in place of the rim, with the back's design on its top face (set on the Back
       // stage). style: inlay (flush, two colours) | raised (the lines stand up). height = fraction of the print's.
       art_border: { enabled: false, style: "inlay", width_mm: 4, height: 0.5 },
+      // "PRINT-BRICK" and the logo, raised on the front of the rim's bottom edge; slot 0 = most contrasting
+      brand: { enabled: true, slot: 0 },
     },
   };
 }
@@ -164,6 +178,9 @@ export function sanitizeProject(raw) {
     output_px: Array.isArray(p.output_px) && p.output_px.length === 2
       ? p.output_px.map((v) => num(v, MOBILE_OUTPUT_PX, 1, 4096)) : bp.output_px,
     physical_width_mm: num(p.physical_width_mm, bp.physical_width_mm, 5, 2000),
+    // older projects keep their square corners and free size
+    preset: pick(p.preset, ["custom", ...SIZE_PRESETS.map((x) => x.key)], "custom"),
+    corner_radius_mm: +num(p.corner_radius_mm, 0, 0, 20).toFixed(1),
     adjustments: Object.fromEntries(Object.entries(bp.adjustments).map(([k, v]) => [k, num(adj[k], v, -1, k === "decimate" ? 256 : 1)])),
     focal_regions: Array.isArray(p.focal_regions) ? p.focal_regions : [],
     shape: { mode: pick(sh.mode, ["rect", "ellipse", "alpha", "knockout"], "rect"),
@@ -196,7 +213,8 @@ export function sanitizeProject(raw) {
       enabled: bo.enabled !== false,
       width_mm: num(bo.width_mm, 3, 0, 100),
       mode: pick(bo.mode, ["raised", "flush", "none"], "raised"),
-      frame_slot: Math.round(num(bo.frame_slot, 1, 1, 8)) },
+      frame_slot: Math.round(num(bo.frame_slot, 1, 1, 8)),
+      height: bo.height == null ? null : +num(bo.height, 1, 0.1, 1).toFixed(2) },
   };
   const ex = obj(d.export);
   out.export = { ...base.export, ...ex, price_per_kg: num(ex.price_per_kg, 25, 0, 100000),
@@ -212,6 +230,9 @@ export function sanitizeProject(raw) {
   const ab = obj(ex.art_border);
   out.export.art_border = { enabled: ab.enabled === true, style: pick(ab.style, ["inlay", "raised"], "inlay"),
                             width_mm: +num(ab.width_mm, 4, 1, 15).toFixed(1), height: +num(ab.height, 0.5, 0.1, 1).toFixed(2) };
+  const br = obj(ex.brand);
+  // older projects were made without the front branding
+  out.export.brand = { enabled: br.enabled === true, slot: Math.round(num(br.slot, 0, 0, 8)) };
   return out;
 }
 

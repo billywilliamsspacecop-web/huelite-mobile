@@ -1,4 +1,4 @@
-import { allFolders, app, canOpen, COMPLETE, isStale, noteReach, DEFAULT_FILAMENTS, defaultData, folderLeaf, folderName, folderParent,
+import { allFolders, app, canOpen, COMPLETE, SIZE_PRESETS, isStale, noteReach, DEFAULT_FILAMENTS, defaultData, folderLeaf, folderName, folderParent,
          joinFolder, MOBILE_OUTPUT_PX, PENDING, sanitizeProject, setStatus, STAGE_LABELS, STAGE_REQUIRES,
          STAGES } from "./state.js";
 import { ASPECTS, createCropper, loadPhoto } from "./crop.js";
@@ -703,7 +703,7 @@ function renderPrep(screen, action) {
   // live shape preview, painted over the crop box by the cropper
   const painter = (oriented, [x, y, w, hgt]) => {
     queueResult();
-    if (p.shape.mode === "rect" && !p.shape.cuts.length) {
+    if (p.shape.mode === "rect" && !p.shape.cuts.length && !(p.corner_radius_mm > 0)) {
       shapeNote.textContent = "prints the whole crop";
       return null;
     }
@@ -756,8 +756,10 @@ function renderPrep(screen, action) {
         if (ready) invalidate();
       },
     });
+    const pre = SIZE_PRESETS.find((x) => x.key === p.preset);
     const a = ASPECTS.find((x) => x.key === aspectKey);
-    if (a?.ratio) cropper.setAspect(a.ratio);
+    if (pre) cropper.setAspect(pre.w / pre.h);
+    else if (a?.ratio) cropper.setAspect(a.ratio);
     cropper.setOverlay(painter);
     p.crop = cropper.getCrop();
     updateReadout(p.crop);
@@ -783,8 +785,38 @@ function renderPrep(screen, action) {
     if (!layout.dual && prepView !== "result") showView("result"); else queueResult();
   };
 
-  const aspectChips = () => chipGroup(ASPECTS.map((a) => ({ key: a.key, label: a.label })), aspectKey,
-    (key) => { aspectKey = key; cropper?.setAspect(ASPECTS.find((a) => a.key === key).ratio); });
+  const aspectChips = () => chipGroup(ASPECTS.map((a) => ({ key: a.key, label: a.label })),
+    SIZE_PRESETS.some((x) => x.key === p.preset) ? null : aspectKey,
+    (key) => { aspectKey = key; setPreset("custom"); cropper?.setAspect(ASPECTS.find((a) => a.key === key).ratio); });
+
+  // ---- size: Print-Brick's three presets fix the crop's shape and the print's width
+  const presetRow = () => chipGroup([
+    ...SIZE_PRESETS.map((x) => ({ key: x.key, label: h("span", { class: "two-line" }, h("b", {}, x.label.replace(/^The /, "")),
+      h("span", {}, `${x.w} × ${x.h} mm`)), tip: `${x.label}: ${x.w} × ${x.h} mm` })),
+    { key: "custom", label: h("span", { class: "two-line" }, h("b", {}, "custom"), h("span", {}, "any size")) },
+  ], p.preset, (key) => {
+    setPreset(key);
+    const pre = SIZE_PRESETS.find((x) => x.key === key);
+    if (pre) {
+      p.physical_width_mm = pre.w;
+      if (widthField) widthField.querySelector("input").value = String(pre.w);
+      cropper?.setAspect(pre.w / pre.h);
+      const fresh = aspectChips(); aspectRow.replaceWith(fresh); aspectRow = fresh;
+    }
+    if (p.crop) updateReadout(p.crop);
+    invalidate();
+    cropper?.refreshOverlay();
+  });
+  let presetEl = presetRow();
+  presetEl.classList.add("presets");
+  function setPreset(key) {
+    if (p.preset === key) return;
+    p.preset = key;
+    const fresh = presetRow(); fresh.classList.add("presets"); presetEl.replaceWith(fresh); presetEl = fresh;
+  }
+  const cornerChips = chipGroup([0, 3, 6].map((r) => ({ key: r, label: r ? `rounded ${r} mm` : "square" })),
+    [0, 3, 6].includes(p.corner_radius_mm) ? p.corner_radius_mm : null,
+    (k) => { p.corner_radius_mm = k; invalidate(); cropper?.refreshOverlay(); });
   let aspectRow = aspectChips();
 
   const tolerance = rangeField("background tolerance", Math.round(p.shape.tolerance * 100), {
@@ -957,6 +989,9 @@ function renderPrep(screen, action) {
       suggestRow,
       paintNote,
 
+      head("size"),
+      presetEl,
+
       head("crop"),
       h("div", { class: "row" },
         h("button", { class: "btn grow", onclick: () => {
@@ -971,7 +1006,11 @@ function renderPrep(screen, action) {
       h("div", { class: "gap-top" }, aspectRow),
       readout,
       widthField = numField("print width (mm)", p.physical_width_mm, { step: "1", min: 20, max: PRINT_MAX_MM,
-        onchange: (v) => { v = fitToBed(v); widthField.querySelector("input").value = String(v); p.physical_width_mm = v; updateReadout(p.crop); invalidate(); cropper?.refreshOverlay(); } }),
+        onchange: (v) => { v = fitToBed(v); widthField.querySelector("input").value = String(v); p.physical_width_mm = v; setPreset("custom"); updateReadout(p.crop); invalidate(); cropper?.refreshOverlay(); } }),
+
+      head("corners"),
+      cornerChips,
+      h("p", { class: "meta hint" }, "rounded corners peel far less than square ones."),
 
       head("shape"),
       shapeChips,
@@ -1386,6 +1425,8 @@ function buildMask(sample, crop) {
     });
     m = shape.clean(m, w, hh, opts.pxPerMm, opts.minFeatureMm);
   }
+  const r = p.corner_radius_mm || 0;
+  if (r > 0 && p.shape.mode !== "ellipse") m = shape.roundCorners(m, sample.width, sample.height, r * opts.pxPerMm);
   return m;
 }
 
@@ -1446,6 +1487,15 @@ function solveSettings() {
 
 /** heights for one image at its own resolution, the same steps as the
  *  desktop's SolveWindow.recompute / _save */
+/** The raised rim's height in layers: up to the frame slot's band, or (newer
+ *  projects) that share of the whole stack, whichever is higher. */
+function rimLayers(maxLayers) {
+  const { s } = solveSettings();
+  const b = s.border || {};
+  const band = solve.bandEndLayer(s.filaments, b.frame_slot ?? 1);
+  return b.height == null ? band : Math.max(band, Math.round(b.height * maxLayers));
+}
+
 function solveImage({ data, mask, w, h }) {
   const { s, lh, mode, mm } = solveSettings();
   const { lut } = solve.buildLut(s.filaments, lh, mode);
@@ -1458,7 +1508,7 @@ function solveImage({ data, mask, w, h }) {
     heights = solve.applyBorder(heights, w, h, {
       widthPx: Math.round((border.width_mm ?? 3) * w / Math.max(1e-6, mm)),
       mode: border.mode || "raised",
-      rimLayers: solve.bandEndLayer(s.filaments, border.frame_slot ?? 1),
+      rimLayers: rimLayers(lut.length - 1),
       maxLayers: lut.length - 1,
       mask,
     });
@@ -1542,7 +1592,7 @@ function renderSolve(screen, action) {
     const t = solve.totals(s.filaments, lh, baseLayers);
     const distinct = solve.distinctColours(live.lut);
     const border = s.border.mode || "raised";
-    const rimMm = t.base_mm + solve.bandEndLayer(s.filaments, s.border.frame_slot ?? 1) * lh;
+    const rimMm = t.base_mm + rimLayers(live.lut.length - 1) * lh;
     const edge = border === "raised" ? `rim ${rimMm.toFixed(2)} mm` : border === "flush" ? "flush edge" : "no border";
     const waste = t.colour_layers - distinct + 1;
     const mode = app.project.prep.shape?.mode || "rect";
@@ -1730,7 +1780,12 @@ function renderSolve(screen, action) {
       chipGroup([{ key: "raised", label: "raised rim" }, { key: "flush", label: "flush" }, { key: "none", label: "none" }],
         s.border.mode || "raised", (k) => { s.border.mode = k; s.border.enabled = k !== "none"; queue(); }),
       app.prepped.mask && h("p", { class: "meta hint" }, "the rim follows the outline"),
-      borderWidth, frameSlot,
+      borderWidth,
+      rangeField("rim height", Math.round((s.border.height ?? 0) * 100), { min: 0, max: 100, step: 5,
+        fmt: (v) => (v ? `${v}% of the print${v >= 100 ? " (full)" : ""}` : "to its slot's band"),
+        oninput: (v) => { s.border.height = v ? v / 100 : null; queue(); } }),
+      h("p", { class: "meta hint" }, "a tall rim holds the edges flat: 100% stops most edge and corner peeling."),
+      frameSlot,
 
       readoutBeside ? null : [head("summary"), readout],
 
@@ -1796,7 +1851,7 @@ async function saveSolved() {
     s.base_mm = +(baseLayers * lh).toFixed(3);
     s.max_layers = app.solved.lut.length - 1;
     s.band_mode = mode;
-    s.border.rim_layers = solve.bandEndLayer(s.filaments, s.border.frame_slot ?? 1);
+    s.border.rim_layers = rimLayers(app.solved.lut.length - 1);
     s.swap_plan = solve.swapPlan(s.filaments, lh, baseLayers);
     setStatus("solve", COMPLETE);
     lastFiles = [];
@@ -2032,10 +2087,26 @@ function renderBackStage(screen, action) {
       ? `takes the place of the ${rimMm} mm rim, so it is at least that wide. the pattern is the design and colour picked above.`
       : "the pattern is the design and colour picked above."));
   abCtrls.hidden = !ab.enabled;
+  const brandSet = app.project.export.brand = withDefaults(app.project.export.brand, { enabled: false, slot: 0 });
+  const brandNote = h("p", { class: "meta" });
+  const paintBrand = () => {
+    const bp = brandPlan();
+    brandNote.textContent = !bp ? "off" : bp.ok
+      ? `"PRINT-BRICK" and the logo, raised ${BRAND_RELIEF_MM} mm on the bottom edge of the rim, in slot ${bp.slot} (${amsName(bp.slot)})${bp.auto ? ", the most contrasting" : ""}.`
+      : `can't go on: ${bp.why}.`;
+  };
+  const brandCheck = h("label", { class: "check-row" },
+    h("input", { type: "checkbox", checked: brandSet.enabled, onchange: (e) => {
+      brandSet.enabled = e.target.checked; paintBrand(); touched();
+    } }),
+    h("span", {}, "Print-Brick name and logo on the front"));
+  requestAnimationFrame(paintBrand);
+
   const abCheck = h("label", { class: "check-row" },
     h("input", { type: "checkbox", checked: ab.enabled, onchange: (e) => {
       ab.enabled = e.target.checked;
       abCtrls.hidden = !ab.enabled;
+      paintBrand();
       side = ab.enabled ? "front" : "back";
       showSide(); setOff(); changed(0);
     } }),
@@ -2067,6 +2138,9 @@ function renderBackStage(screen, action) {
       optGrid([1, 2, 3].map((n) => ({ key: n, label: h("span", { class: "two-line" },
         h("b", {}, `${n} layer${n > 1 ? "s" : ""}`), h("span", {}, `${backart.backDepthMm(n, lh).toFixed(2)} mm`)) })),
       back.layers, (k) => { back.layers = k; changed(0); }, 3),
+      head("front branding"),
+      brandCheck,
+      brandNote,
       head("art border"),
       abCheck,
       abCtrls),
@@ -2251,6 +2325,32 @@ function backPlan(back) {
   return { slot, auto: !chosen, layers, depthMm, baseMm, reduced: layers < back.layers,
            hex: fil.find((f) => f.slot === slot).hex, usable: slot !== fil[0].slot,
            thin: depthMm > baseMm - lh + 1e-6 };
+}
+
+// ---- front branding: "PRINT-BRICK" and the logo standing up from the rim's bottom edge
+const BRAND_RELIEF_MM = 0.4;
+
+/** What the branding needs, or why it can't go on: { ok, why, z0, z1, slot, hex, rimMm }. */
+function brandPlan() {
+  const ex = app.project.export;
+  const br = ex.brand = withDefaults(ex.brand, { enabled: false, slot: 0 });
+  if (!br.enabled || !app.solved) return null;
+  const { s, lh, baseLayers } = solveSettings();
+  const b = s.border || {};
+  if ((b.mode || "raised") !== "raised") return { ok: false, why: "needs a raised rim (Solve › border)" };
+  if (artBorderPlan()) return { ok: false, why: "the art border takes the rim's top instead" };
+  const rimMm = b.width_mm ?? 3;
+  if (rimMm < 5) return { ok: false, why: "needs a rim at least 5 mm wide (7 mm is best)" };
+  const top = Math.min(app.solved.lut.length - 1, rimLayers(app.solved.lut.length - 1));
+  const z0 = mesh.snappedBaseMm(baseLayers, lh) + top * lh;
+  const bands = mesh.bandBounds(s.filaments);
+  const under = bands.find((x) => top > x.start_h && top <= x.end_h) || bands[bands.length - 1];
+  const fil = s.filaments, uRgb = hexToRgb(under?.hex || fil[0].hex);
+  const dist = (f) => { const c = hexToRgb(f.hex); return Math.hypot(...c.map((v, i) => (v - uRgb[i]) * [0.3, 0.59, 0.11][i] * 3)); };
+  const chosen = fil.find((f) => f.slot === br.slot);
+  const slot = chosen ? chosen.slot : fil.reduce((best, f) => (dist(f) > dist(best) ? f : best), fil[0]).slot;
+  return { ok: true, z0, z1: z0 + Math.max(2, Math.round(BRAND_RELIEF_MM / lh)) * lh, slot, auto: !chosen,
+           hex: fil.find((f) => f.slot === slot).hex, rimMm };
 }
 
 /** obj (made if missing) with any absent keys taken from defaults, keeping its identity. */
@@ -2520,6 +2620,16 @@ function renderExport(screen, action) {
           seed: back.seed, weight: back.weight ?? 1, ...backFrame(back), title: app.project.name });
         for (const part of backart.ringParts(art, { z0: ring.z0, z1: ring.z1, slot: ring.slot,
           restSlot: ring.inlay ? ring.restSlot : null })) mesh.addMeshPart(model, part);
+      }
+      const brand = brandPlan();
+      if (brand?.ok) {
+        const art = await backart.renderBrandTop(mesh.modelGrid(modelArgs()), { rimMm: brand.rimMm });
+        if (art.fits) {
+          for (const part of backart.ringParts(art, { z0: brand.z0, z1: brand.z1, slot: brand.slot })) {
+            part.name = "Front branding";
+            mesh.addMeshPart(model, part);
+          }
+        }
       }
       const out = [];
       if (formats.includes("3mf")) {
