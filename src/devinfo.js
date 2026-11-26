@@ -17,6 +17,7 @@ export const VERSIONS = [
       "196-design back-plate library in 20 themes, with zoom and shift",
       "Studio-style buttons and an AMS-style spool panel",
       "Dev page: versions, changelog, notes",
+      "Update screen: a ready card, and a little celebration once it installs",
     ],
   },
   {
@@ -73,9 +74,5 @@ export const CLAUDE_NOTES = [
     title: "Thickness",
     body: "New projects are 10 mm tall with the thinnest spot at least 4.5 mm (Solve › thickness). The extra is base in slot 1, " +
       "so colours don't change. A Brick sliced at about 41 g and 4 h 10 min. Lower the total if that's more than you want.",
-  },
-  {
-    title: "Waiting on you",
-    body: "Prices for The Brick, The Block and The Signature (they can show on Export once set).",
   },
 ];

@@ -256,6 +256,13 @@ slowly, and its name, size, progress and filaments show underneath.
 The front picture is saved when you finish Solve, and the back when Back draws. Older projects show their square
 thumbnail and a blank back until they are opened. "list" and "album" are still there for folder work.
 
+## Updates
+
+When a new build has been published, a card slides up: "A new HueLite is ready", with a rocking spool and an
+update button. After it installs, a print stacks itself layer by layer while filament bits fall, and a cheer
+comes up: a different one from last time, out of 14, with the update's number and its top three changes. The
+very first run doesn't count as an update. Dev › "preview the update screen" shows it any time (src/celebrate.js).
+
 ## Dev page
 
 Main menu › Dev: the version and build, storage used, defaults for new projects (size, corners, front

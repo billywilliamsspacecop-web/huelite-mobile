@@ -21,6 +21,7 @@ import { actionSheet, attachRail, colourSheet, folderSheet, slider } from "./ui.
 import { hexToRgb, toHex } from "./colour.js";
 import { amsIcon, amsName, paintSpool, slotBadge, spool } from "./spool.js";
 import { createShelf } from "./shelf.js";
+import { celebrate, checkUpdated, showUpdateReady } from "./celebrate.js";
 import { APP_VERSION, CLAUDE_NOTES, VERSIONS } from "./devinfo.js";
 
 const root = document.getElementById("app");
@@ -1419,6 +1420,9 @@ function menuDev(screen) {
       toast("shelf pictures cleared");
     } }, "clear shelf and album pictures"),
     h("button", { class: "btn wide gap-top", type: "button", onclick: () => menuGo("settings") }, "sound, motion and gestures ›"),
+    h("button", { class: "btn wide gap-top", type: "button", onclick: () =>
+      celebrate(Math.max(1, parseInt(pref("updates", "0"), 10) || 1), { version: APP_VERSION, name: VERSIONS[0].name, changes: VERSIONS[0].changes }) },
+      "preview the update screen"),
 
     head("notes for Claude"),
     notes,
@@ -2966,11 +2970,12 @@ render();
 // been published, the service worker fetches it in the background and this
 // bar offers the switch, so a deploy reaches an open app without hunting for
 // a refresh. Production builds only.
-function showUpdateBar() {
-  if (document.querySelector(".update-bar")) return;
-  document.body.append(h("div", { class: "update-bar" },
-    h("span", {}, "a new version of HueLite is ready"),
-    h("button", { type: "button", onclick: () => location.reload() }, "reload")));
+const showUpdateBar = showUpdateReady;
+
+// after an update installs: a little celebration (not on the very first run)
+if (import.meta.env.PROD) {
+  const n = checkUpdated(__BUILD__);
+  if (n) setTimeout(() => celebrate(n, { version: APP_VERSION, name: VERSIONS[0].name, changes: VERSIONS[0].changes }), 350);
 }
 
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
