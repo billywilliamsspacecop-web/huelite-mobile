@@ -2117,11 +2117,12 @@ function renderSolve(screen, action) {
       h("div", { class: "below-view" }, summary, readoutBeside ? readout : null)),
     pane("ctrl",
       head("foundations"),
-      rangeField("foundations", Math.min(25, Math.round((s.slope_mm_per_layer ?? 0) * 100)), { min: 0, max: 25, key: true,
-        fmt: (v) => (v ? `${(v / 100).toFixed(2)} mm run / layer` : "off"),
-        oninput: (v) => { s.slope_mm_per_layer = v / 100; queue(); } }),
-      (s.slope_mm_per_layer ?? 0) > 0.25 && h("p", { class: "meta" },
-        `this project is at ${s.slope_mm_per_layer.toFixed(2)}, past the slider's 0.25 end; moving it sets a new value.`),
+      // 0-100 on the slider = 0.000-0.100 mm: the 0.01-0.05 that prints well is most of its travel
+      rangeField("foundations", Math.min(100, Math.round((s.slope_mm_per_layer ?? 0) * 1000)), { min: 0, max: 100, key: true,
+        fmt: (v) => (v ? `${(v / 1000).toFixed(3)} mm run / layer` : "off"),
+        oninput: (v) => { s.slope_mm_per_layer = v / 1000; queue(); } }),
+      (s.slope_mm_per_layer ?? 0) > 0.1 && h("p", { class: "meta" },
+        `this project is at ${s.slope_mm_per_layer.toFixed(2)}, past the slider's 0.100 end; moving it sets a new value.`),
 
       head("filaments"),
       h("p", { class: "meta hint" }, "slot 1 prints lowest · tap a spool to choose its colour"),
@@ -2160,8 +2161,8 @@ function renderSolve(screen, action) {
       readoutBeside ? null : [head("summary"), readout],
 
       head("thickness"),
-      thickField("total height (mm)", "total_mm", 10),
-      thickField("thinnest spot at least (mm)", "min_mm", 4.5),
+      thickField("total height (mm)", "total_mm", 4),
+      thickField("thinnest spot at least (mm)", "min_mm", 2),
       h("p", { class: "meta hint" }, "the base under everything (slot 1) grows to reach these. it doesn't change the colours, " +
         "but uses more filament: the print feels solid and stays flat. clear a box to turn it off."),
 

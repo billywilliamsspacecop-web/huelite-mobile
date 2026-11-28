@@ -233,9 +233,11 @@ artwork; colours come in through CSS variables).
 - **Corners** (Prep › corners): square, rounded 3 mm (new projects) or 6 mm. Square corners are where peeling starts.
 - **Rim** (Solve › border): new projects get a 7 mm rim at 100% of the print's height, which holds the edges
   flat. The rim height slider goes down to "to its slot's band", the old behaviour (older projects keep it).
-- **Thickness** (Solve › thickness): new projects are 10 mm tall in total, and no spot is thinner than 4.5 mm.
-  The base (slot 1, under everything) grows to reach both, so the front colours don't change. A Brick slices at
-  about 41 g and 4 h 10 min. Clear either box to turn it off. Older projects keep their base.
+- **Thickness** (Solve › thickness): new projects are 4 mm tall in total, and no spot is thinner than 2 mm.
+  The base (slot 1, under everything) grows to reach both, so the front colours don't change. Clear either box
+  to turn it off. Older projects keep their base.
+- **Foundations** (Solve): the slider runs 0–0.100 mm run per layer in 0.001 steps, so the 0.01–0.05 range
+  that prints well takes up half its travel.
 - **Stack order** (Solve › stack order): tap two colours to swap them (each takes its TD and layers to its new
   slot), "flip order" turns the stack upside down, and "dark → light" sorts it. Fit-colours stops re-sorting once
   you've reordered.

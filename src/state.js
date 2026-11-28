@@ -108,7 +108,7 @@ export function defaultData(name) {
       slope_mm_per_layer: 0.05,      // foundations
       // thickness: the base (slot 1, under everything) grows until the print is total_mm tall and
       // no spot is thinner than min_mm. null = off (older projects keep their base as it was)
-      thickness: { total_mm: 10, min_mm: 4.5 },
+      thickness: { total_mm: 4, min_mm: 2 },
       colours_seeded: false,
       colours_auto: false,   // colours were picked by the fit, so they follow the stack
       // height: the rim's share of the print's height (1 = full height, which holds the edges down);

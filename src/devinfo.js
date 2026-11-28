@@ -10,7 +10,8 @@ export const VERSIONS = [
     changes: [
       "Size presets: The Brick 75 × 115, The Block 150 × 150, The Signature 200 × 200 mm",
       "Rounded corners and a 7 mm full-height rim by default, against corner and edge peeling",
-      "Solid prints: 10 mm total, thinnest spot at least 4.5 mm (the base grows to fit)",
+      "Solid prints: 4 mm total, thinnest spot at least 2 mm (the base grows to fit)",
+      "Foundations slider 10× finer: 0.001 mm steps up to 0.100",
       "Stack order: swap any two colours, flip the order, or dark → light",
       "Flatter relief: 6 layers per colour by default (was 12), with a relief slider",
       "PRINT-BRICK name and logo raised on the front border",
@@ -74,7 +75,7 @@ export const CLAUDE_NOTES = [
   },
   {
     title: "Thickness",
-    body: "New projects are 10 mm tall with the thinnest spot at least 4.5 mm (Solve › thickness). The extra is base in slot 1, " +
-      "so colours don't change. A Brick sliced at about 41 g and 4 h 10 min. Lower the total if that's more than you want.",
+    body: "New projects are 4 mm tall with the thinnest spot at least 2 mm (Solve › thickness). The extra is base in slot 1, " +
+      "so colours don't change. With the flatter 6-layer relief, a 2 mm base lands right at about 4 mm.",
   },
 ];
