@@ -50,14 +50,19 @@ function pickCheer() {
 }
 
 /** The ready-to-update card: a spinning spool and one big button. */
-export function showUpdateReady() {
+export function showUpdateReady(onWait = null) {
   if (document.querySelector(".update-card")) return;
   const sp = spool(PALETTE[2], { mini: true });
   const card = h("div", { class: "update-card", role: "dialog", "aria-label": "update ready" },
     h("div", { class: "uc-spool" }, sp),
-    h("div", { class: "uc-text" }, h("b", {}, "A new HueLite is ready"), h("span", {}, "loaded and warmed up. it takes a second.")),
-    h("button", { type: "button", class: "uc-go", onclick: () => { card.classList.add("going"); setTimeout(() => location.reload(), 380); } }, "update"),
-    h("button", { type: "button", class: "uc-later", "aria-label": "later", onclick: () => card.remove() }, "✕"));
+    h("div", { class: "uc-text" }, h("b", {}, "A new HueLite is ready"), h("span", {}, "install now, or wait: it switches over next time you open HueLite.")),
+    h("div", { class: "uc-btns" },
+      h("button", { type: "button", class: "uc-go", onclick: () => { card.classList.add("going"); setTimeout(() => location.reload(), 380); } }, "install"),
+      h("button", { type: "button", class: "uc-later", onclick: () => {
+        card.classList.add("going");
+        setTimeout(() => card.remove(), 380);
+        onWait?.();
+      } }, "wait")));
   document.body.append(card);
 }
 

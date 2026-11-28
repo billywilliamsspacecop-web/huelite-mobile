@@ -269,7 +269,11 @@ thumbnail and a blank back until they are opened. "list" and "album" are still t
 When a new build has been published, a card slides up: "A new HueLite is ready", with a rocking spool and an
 update button. After it installs, a print stacks itself layer by layer while filament bits fall, and a cheer
 comes up: a different one from last time, out of 14, with the update's number and its top three changes. The
-very first run doesn't count as an update. Dev › "preview the update screen" shows it any time (src/celebrate.js).
+very first run doesn't count as an update.
+
+**Check for updates:** the Updates tile at the bottom of the main menu (next to Settings and Dev) asks the site for
+a newer build. If there is one, the card offers **install** (reload now) or **wait** (keep going; the new version
+opens next time). If not, it says you're on the newest. The tile lights up while an update is waiting. Dev › "preview the update screen" shows it any time (src/celebrate.js).
 
 ## Dev page
 

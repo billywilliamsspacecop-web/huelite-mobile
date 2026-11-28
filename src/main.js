@@ -29,6 +29,7 @@ const SOLVE_PROXY = 360;      // live solve resolution (long edge)
 const PREP_OVERLAY_PX = 320;  // shape preview resolution (long edge)
 const PREP_RESULT_PX = 420;   // adjusted-result preview resolution (long edge)
 let cropper = null;
+let swReg = null, updateWaiting = false;   // set by the service worker code at the end
 let aspectKey = "free";
 let solveView = "sim";
 let solveTimer = 0;
@@ -663,7 +664,7 @@ function render() {
   const action = h("div", { class: "action" });
   ({ prep: renderPrep, solve: renderSolve, back: renderBackStage, export: renderExport })[app.stage](screen, action);
   const dock = h("div", { class: "dock" }, action.childElementCount ? action : null,
-    home ? null : renderStepper());
+    home ? (menuPage === "main" ? menuFoot() : null) : renderStepper());
   const body = h("div", { class: "body" }, screen);
   root.append(header, body, dock);
 
@@ -1540,6 +1541,19 @@ const menuItem = (n, title, hint, onclick, cls = "") =>
     h("span", { class: "mi-n" }, typeof n === "string" ? n : n),
     h("span", { class: "mi-t" }, h("b", {}, title), h("span", { class: "meta" }, hint)),
     h("span", { class: "mi-go" }, "›"));
+/** The main menu's foot: the build, then Settings, Dev and Check for updates. */
+function menuFoot() {
+  const upd = menuTile("Updates", () => checkForUpdates(upd));
+  upd.classList.add("upd-tile");
+  if (updateWaiting) upd.classList.add("found");
+  return h("div", { class: "menu-foot" },
+    h("p", { class: "stamp" }, `v${APP_VERSION} · build ${__BUILD__}`),
+    h("div", { class: "menu-tiles foot" },
+      menuTile("Settings", () => menuGo("settings")),
+      menuTile("Dev", () => menuGo("dev")),
+      upd));
+}
+
 /** The smaller menu entries, as tiles in a grid under the big three. */
 const menuTile = (title, onclick) => h("button", { class: "menu-tile", type: "button", onclick }, title);
 
@@ -1554,10 +1568,8 @@ function menuMain(screen) {
     projects,
     h("div", { class: "menu-tiles" },
       menuTile("Import .zip", () => zipPicker.click()),
-      menuTile("Settings", () => menuGo("settings")),
       menuTile("Help", () => menuGo("help")),
-      menuTile("About", () => menuGo("about")),
-      menuTile("Dev", () => menuGo("dev"))));
+      menuTile("About", () => menuGo("about"))));
   list.querySelectorAll(".menu-item, .menu-tiles").forEach((el, i) => el.style.setProperty("--i", String(i)));
 
   screen.append(
@@ -1565,7 +1577,7 @@ function menuMain(screen) {
       h("div", { class: "hero-mark" }, h("i"), h("i"), h("i"), h("i"), h("i")),
       h("div", { class: "hero-word" }, "HUELITE"),
       h("div", { class: "hero-sub" }, "multi-colour relief prints for the Bambu Lab A1")))),
-    pane("ctrl", list, h("p", { class: "stamp" }, `build ${__BUILD__}`)));
+    pane("ctrl", list));
 
   store.listProjects().then((raw) => {
     if (!raw.length) return;
@@ -3108,7 +3120,7 @@ render();
 // been published, the service worker fetches it in the background and this
 // bar offers the switch, so a deploy reaches an open app without hunting for
 // a refresh. Production builds only.
-const showUpdateBar = showUpdateReady;
+const showUpdateBar = () => showUpdateReady(() => toast("ok: it switches over the next time you open HueLite", 2600));
 
 // after an update installs: a little celebration (not on the very first run)
 if (import.meta.env.PROD) {
@@ -3116,16 +3128,46 @@ if (import.meta.env.PROD) {
   if (n) setTimeout(() => celebrate(n, { version: APP_VERSION, name: VERSIONS[0].name, changes: VERSIONS[0].changes }), 350);
 }
 
+/** The Updates tile: ask the site for a newer build. Found = the install / wait
+ *  card; none = say so. Only the published app has updates to find. */
+async function checkForUpdates(tile) {
+  if (updateWaiting) return showUpdateBar();
+  if (!swReg) return toast("updates come with the published app, not this copy", 2400);
+  if (tile.classList.contains("busy")) return;
+  const label = tile.textContent;
+  tile.classList.add("busy");
+  tile.textContent = "checking…";
+  try {
+    await swReg.update();
+    // a newer build installs itself and takes over: wait for that a little while
+    const t0 = Date.now();
+    while (!updateWaiting && (swReg.installing || swReg.waiting) && Date.now() - t0 < 20000) await new Promise((r) => setTimeout(r, 200));
+    if (updateWaiting) showUpdateBar();
+    else toast(`you're on the newest HueLite ✓  (v${APP_VERSION})`, 2600);
+  } catch {
+    toast("couldn't reach the internet to check", 2400);
+  } finally {
+    tile.classList.remove("busy");
+    tile.textContent = label;
+    tile.classList.toggle("found", updateWaiting);
+  }
+}
+
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
   // The first time a worker takes over (first install) is not an update; any
   // change of worker after that is.
   let controlled = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.addEventListener("controllerchange", () => {
-    if (controlled) showUpdateBar();
+    if (controlled) {
+      updateWaiting = true;
+      document.querySelector(".upd-tile")?.classList.add("found");
+      showUpdateBar();
+    }
     controlled = true;
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("./sw.js").then((reg) => {
+      swReg = reg;
       const check = () => reg.update().catch(() => {});
       document.addEventListener("visibilitychange", () => { if (!document.hidden) check(); });
       setInterval(check, 30 * 60 * 1000);

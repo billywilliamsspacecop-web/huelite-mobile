@@ -21,6 +21,7 @@ export const VERSIONS = [
       "Studio-style buttons and an AMS-style spool panel",
       "Dev page: versions, changelog, notes",
       "Update screen: a ready card, and a little celebration once it installs",
+      "Check for updates on the main menu: install now, or wait for the next open",
     ],
   },
   {

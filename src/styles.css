@@ -659,11 +659,11 @@ a.btn { display: block; text-decoration: none; text-align: center; color: var(--
 .menu-item.lead { min-height: 76px; }
 .menu-item.lead .mi-t b { font-size: 17px; }
 .menu-item.first { background: color-mix(in srgb, var(--fill) 70%, var(--well)); }
-.menu-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-top: 10px; }
+.menu-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 10px; }
 .menu-tile { min-height: 46px; padding: 6px 4px; border: 1px solid var(--line); background: transparent; color: var(--muted);
   font: 700 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; border-radius: 999px; }
 .menu-tile:active { border-color: var(--accent); color: var(--text); }
-@media (max-width: 380px) { .menu-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+
 #app[data-enter] .menu-tiles { animation: group-in .62s var(--ease-out) backwards; animation-delay: calc(var(--i, 0) * 70ms + 140ms); }
 
 /* new project page */
@@ -969,3 +969,14 @@ html[data-stage="prep"] .chip.on, html[data-stage="back"] .chip.on, html[data-st
   display: grid; place-items: center; transition: transform .15s, box-shadow .15s; }
 .ord-chip b { font: 800 12px var(--mono); padding: 2px 6px; border-radius: 6px; background: rgba(0, 0, 0, .55); color: #fff; }
 .ord-chip.picked { transform: translateY(-4px); border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent); }
+
+/* main menu foot: Settings, Dev and Updates, bottom right */
+.menu-foot { padding: 8px 16px calc(var(--safe-bottom, 0px) + 10px); border-top: 1px dotted var(--line); }
+.menu-foot .stamp { margin: 0 0 6px; text-align: right; }
+.menu-tiles.foot { margin-top: 0; }
+.menu-tile.upd-tile.busy { color: var(--text); border-color: var(--accent); animation: uc-pulse 1.2s ease-in-out infinite; }
+.menu-tile.upd-tile.found { color: var(--on-accent, #111); background: var(--accent); border-color: var(--accent); }
+.update-card { grid-template-columns: 44px 1fr auto; }
+.update-card .uc-btns { display: flex; flex-direction: column; gap: 6px; }
+.update-card .uc-later { height: auto; padding: 6px 12px; border: 1px solid var(--line); border-radius: 10px;
+  font: 700 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
