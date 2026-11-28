@@ -225,6 +225,137 @@ function triangulate(rings) {
   }
 }
 
+/** Where two rings touch along a straight line (a hole meeting the outline,
+ *  two holes side by side), one ring can have a corner in the middle of the
+ *  other's edge. The walls and caps then disagree along that line and Studio
+ *  reports "open edges". This adds each such point to the edge it sits on, in
+ *  every ring, so both sides share it. Rings come back as new arrays. */
+export function shareTouchingPoints(rings) {
+  const pts = [];
+  rings.forEach((r, k) => r.forEach(([x, y], i) => pts.push([x, y, k, i])));
+  if (pts.length < 4) return rings;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of pts) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  const span = Math.max(x1 - x0, y1 - y0, 1e-9);
+  const cell = Math.max(span / Math.sqrt(pts.length) * 2, 1e-6);
+  const grid = new Map();
+  const key = (cx, cy) => `${cx},${cy}`;
+  for (const p of pts) {
+    const k = key(Math.floor((p[0] - x0) / cell), Math.floor((p[1] - y0) / cell));
+    let b = grid.get(k); if (!b) grid.set(k, (b = [])); b.push(p);
+  }
+  const eps = span * 1e-9;
+  let changed = false;
+  const out = rings.map((r) => {
+    const res = [];
+    for (let i = 0; i < r.length; i++) {
+      const [ax, ay] = r[i], [bx, by] = r[(i + 1) % r.length];
+      res.push(r[i]);
+      const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy;
+      if (!L2) continue;
+      const L = Math.sqrt(L2), steps = Math.ceil(L / (cell * 0.5)) + 1, seen = new Set(), hits = [];
+      for (let s = 0; s <= steps; s++) {
+        const cx = Math.floor((ax + dx * s / steps - x0) / cell), cy = Math.floor((ay + dy * s / steps - y0) / cell);
+        for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
+          for (const p of grid.get(key(cx + ox, cy + oy)) || []) {
+            if (seen.has(p)) continue;
+            seen.add(p);
+            const qx = p[0] - ax, qy = p[1] - ay;
+            if (Math.abs(dx * qy - dy * qx) > eps * L) continue;        // off the line
+            const t = (dx * qx + dy * qy) / L2;
+            if (t <= 1e-9 || t >= 1 - 1e-9) continue;                    // not strictly between
+            hits.push([t, p[0], p[1]]);
+          }
+        }
+      }
+      if (hits.length) {
+        changed = true;
+        hits.sort((a, b) => a[0] - b[0]);
+        let lt = -1;
+        for (const [t, x, y] of hits) { if (t - lt > 1e-9) res.push([x, y]); lt = t; }
+      }
+    }
+    return res;
+  });
+  return changed ? out : rings;
+}
+
+/** A ring point can also land in the middle of one of earcut's own diagonals
+ *  (common on pixel outlines, where many points share a line). The triangles
+ *  either side then disagree about that point. Each triangle with a point on
+ *  an inner edge is split into a fan round its centroid (a new point, added at
+ *  the end, so the rings and walls keep their indices). Ring edges are left
+ *  alone: shareTouchingPoints already made the rings agree, and the walls
+ *  follow them. */
+export function splitInnerTJunctions(flat, holeIdx, tris) {
+  const n = flat.length / 2;
+  if (!tris.length || n < 4) return { flat, tris };
+  const starts = [0, ...holeIdx, n], ringEdge = new Set();
+  for (let k = 0; k + 1 < starts.length; k++) {
+    const o = starts[k], m = starts[k + 1] - o;
+    for (let i = 0; i < m; i++) { const a = o + i, b = o + (i + 1) % m; ringEdge.add(a * n + b); ringEdge.add(b * n + a); }
+  }
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const x = flat[2 * i], y = flat[2 * i + 1];
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  const span = Math.max(x1 - x0, y1 - y0, 1e-9), cell = Math.max(span / Math.sqrt(n) * 2, 1e-6), grid = new Map();
+  const key = (cx, cy) => `${cx},${cy}`;
+  for (let i = 0; i < n; i++) {
+    const k = key(Math.floor((flat[2 * i] - x0) / cell), Math.floor((flat[2 * i + 1] - y0) / cell));
+    let b = grid.get(k); if (!b) grid.set(k, (b = [])); b.push(i);
+  }
+  const eps = span * 1e-7, memo = new Map();   // how far off a line a point may be and still be on it (mm)
+  /** Point i lies strictly between a and b, within eps of the line. */
+  const between = (i, a, b) => {
+    const ax = flat[2 * a], ay = flat[2 * a + 1], dx = flat[2 * b] - ax, dy = flat[2 * b + 1] - ay, L2 = dx * dx + dy * dy;
+    if (!L2) return false;
+    const qx = flat[2 * i] - ax, qy = flat[2 * i + 1] - ay;
+    if (Math.abs(dx * qy - dy * qx) > eps * Math.sqrt(L2)) return false;
+    const t = (dx * qx + dy * qy) / L2;
+    return t > 1e-9 && t < 1 - 1e-9;
+  };
+  const onEdge = (a, b) => {
+    if (ringEdge.has(a * n + b)) return [];
+    const mk = a < b ? a * n + b : b * n + a;
+    let hit = memo.get(mk);
+    if (!hit) {
+      const lo = Math.min(a, b), hi = Math.max(a, b);
+      const ax = flat[2 * lo], ay = flat[2 * lo + 1], dx = flat[2 * hi] - ax, dy = flat[2 * hi + 1] - ay, L2 = dx * dx + dy * dy;
+      hit = [];
+      if (L2) {
+        const L = Math.sqrt(L2), steps = Math.ceil(L / (cell * 0.5)) + 1, seen = new Set();
+        for (let s = 0; s <= steps; s++) {
+          const cx = Math.floor((ax + dx * s / steps - x0) / cell), cy = Math.floor((ay + dy * s / steps - y0) / cell);
+          for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) for (const i of grid.get(key(cx + ox, cy + oy)) || []) {
+            if (i === lo || i === hi || seen.has(i)) continue;
+            seen.add(i);
+            if (between(i, lo, hi)) hit.push([((flat[2 * i] - ax) * dx + (flat[2 * i + 1] - ay) * dy) / L2, i]);
+          }
+        }
+        hit.sort((p, q) => p[0] - q[0]);
+      }
+      memo.set(mk, hit);
+    }
+    const ids = hit.map((x) => x[1]);
+    return a < b ? ids : ids.reverse();
+  };
+  const outF = Array.from(flat), outT = [];
+  for (let t = 0; t < tris.length; t += 3) {
+    const a = tris[t], b = tris[t + 1], c = tris[t + 2];
+    // a flat sliver (three points on a line) earcut sometimes adds already
+    // bridges a T-junction; the split below does that properly, so drop it
+    if (between(c, a, b) || between(a, b, c) || between(b, c, a)) continue;
+    const ab = onEdge(a, b), bc = onEdge(b, c), ca = onEdge(c, a);
+    if (!ab.length && !bc.length && !ca.length) { outT.push(a, b, c); continue; }
+    const ring = [a, ...ab, b, ...bc, c, ...ca], m = outF.length / 2;
+    outF.push((flat[2 * a] + flat[2 * b] + flat[2 * c]) / 3, (flat[2 * a + 1] + flat[2 * b + 1] + flat[2 * c + 1]) / 3);
+    for (let k = 0; k < ring.length; k++) outT.push(m, ring[k], ring[(k + 1) % ring.length]);
+  }
+  return { flat: outF, tris: outT };
+}
+
 /** Polygons -> closed triangle mesh from z0 to z1. `toModel(x, y)` maps a
  *  loop point to model millimetres. Returns { vertices: Float32Array(3n),
  *  triangles: Uint32Array(3m) }, wound outward. */
@@ -237,7 +368,8 @@ export function extrude(polys, z0, z1, toModel) {
       const ccw = signedArea(r) > 0;           // signedArea() is positive for counter-clockwise in y-up
       if ((k === 0) !== ccw) r.reverse();
     });
-    const { flat, holeIdx, tris } = triangulate(rings);
+    const tri = triangulate(shareTouchingPoints(rings));
+    const { flat, tris } = splitInnerTJunctions(tri.flat, tri.holeIdx, tri.tris);
     const n = flat.length / 2;
     const base = V.length / 3;
     for (let i = 0; i < n; i++) V.push(flat[2 * i], flat[2 * i + 1], z0);

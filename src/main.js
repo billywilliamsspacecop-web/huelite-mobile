@@ -3025,6 +3025,12 @@ function renderExport(screen, action) {
           }
         }
       }
+      // the boxes are always sealed; check the traced parts (back art, borders, branding)
+      const leaky = model.parts.filter((p) => p.mesh).map((p) => [p.name, mesh.openEdges(p.mesh)]).filter(([, k]) => k);
+      if (leaky.length) {
+        console.warn("open edges", leaky);
+        setTimeout(() => toast(`mesh check: ${leaky.map(([nm, k]) => `${k} open edges in "${nm}"`).join(", ")}. Studio can usually still print it.`, 4200), 600);
+      }
       const out = [];
       if (formats.includes("3mf")) {
         out.push(new File([await bambu3mf.make3mf(model,

@@ -153,6 +153,18 @@ export function buildModel({ heights, w, h, mask, physicalW, layerH, baseLayers,
   return { parts, name, stats: { parts: parts.length, triangles: nBoxes * 12, vertices: nBoxes * 8 } };
 }
 
+/** Edges of a triangle mesh with no partner going the other way: gaps in the
+ *  surface, what Bambu Studio calls "open edges". 0 = sealed. */
+export function openEdges(m) {
+  const T = m.triangles, seen = new Set(), n = m.vertices.length / 3;
+  for (let t = 0; t < T.length; t += 3) {
+    seen.add(T[t] * n + T[t + 1]); seen.add(T[t + 1] * n + T[t + 2]); seen.add(T[t + 2] * n + T[t]);
+  }
+  let open = 0;
+  for (const e of seen) { const a = Math.floor(e / n), b = e % n; if (!seen.has(b * n + a)) open++; }
+  return open;
+}
+
 /** Add a triangle-mesh part ({ name, extruder, mesh: { vertices, triangles } }). */
 export function addMeshPart(model, part) {
   model.parts.push(part);

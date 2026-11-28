@@ -478,6 +478,15 @@ and press Run. This is the same flow as Fetch Run.
     npx cap add android  # first time only
     npx cap sync android && npx cap open android
 
+## Sealed meshes
+
+The traced parts (back art, the base with the art cut out, art border, branding) are outlines extruded into
+solids. Where two outlines touch along a straight line, or a point lands on one of earcut's diagonals, the top
+and bottom faces could miss a point and leave a slit: Bambu Studio's "open edges". outline.js now adds touching
+points to both outlines (shareTouchingPoints) and splits any triangle with a point on an inner edge
+(splitInnerTJunctions). Checked with 800 random shapes and real exports: 0 open edges. Export also checks every
+traced part (mesh.openEdges) and says so if one ever isn't sealed.
+
 ## To check when touching the engine
 
 - Rotate/flip order must match desktop `core/imaging.py`; the phone rotates and then mirrors.

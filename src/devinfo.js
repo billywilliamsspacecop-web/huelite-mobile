@@ -22,6 +22,7 @@ export const VERSIONS = [
       "Dev page: versions, changelog, notes",
       "Update screen: a ready card, and a little celebration once it installs",
       "Check for updates on the main menu: install now, or wait for the next open",
+      "Sealed meshes: fixed the \"open edges\" Studio found in the back-art base layer",
     ],
   },
   {
