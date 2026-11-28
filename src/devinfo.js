@@ -11,6 +11,8 @@ export const VERSIONS = [
       "Size presets: The Brick 75 × 115, The Block 150 × 150, The Signature 200 × 200 mm",
       "Rounded corners and a 7 mm full-height rim by default, against corner and edge peeling",
       "Solid prints: 10 mm total, thinnest spot at least 4.5 mm (the base grows to fit)",
+      "Stack order: swap any two colours, flip the order, or dark → light",
+      "Flatter relief: 6 layers per colour by default (was 12), with a relief slider",
       "PRINT-BRICK name and logo raised on the front border",
       "Projects shelf: swipe through prints in 3D, front and back, sort and filter",
       "Stage switching: later stages stay reachable and update when you continue",

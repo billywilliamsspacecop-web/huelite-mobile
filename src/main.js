@@ -2023,7 +2023,73 @@ function renderSolve(screen, action) {
       h("div", { class: "ams-body" }, h("div", { class: "ams-col" }, left), h("div", { class: "ams-hub" }), h("div", { class: "ams-col" }, right)));
   };
   let filEl = filTable();
-  const refitTable = () => { const fresh = filTable(); filEl.replaceWith(fresh); filEl = fresh; };
+  const refitTable = () => {
+    const fresh = filTable(); filEl.replaceWith(fresh); filEl = fresh;
+    const o = orderRow(); orderEl.replaceWith(o); orderEl = o;
+  };
+
+  // ---- stack order: which colour sits on which. Swapping moves a colour (with
+  // its TD and layers) to another slot, so the AMS slots follow the new order.
+  let picked = -1;
+  const swapFil = (a, b) => {
+    const F = s.filaments, keys = ["hex", "name", "td_mm", "band_layers"];
+    const A = Object.fromEntries(keys.map((k) => [k, F[a][k]]));
+    keys.forEach((k) => { F[a][k] = F[b][k]; F[b][k] = A[k]; });
+  };
+  const reordered = (note) => {
+    s.colours_auto = false;     // a fit would put them back in its own order
+    picked = -1;
+    refitTable(); queue();
+    if (note) toast(note, 2200);
+  };
+  const lum = (hex) => { const [r, g, b] = hexToRgb(hex); return 0.299 * r + 0.587 * g + 0.114 * b; };
+  const orderRow = () => {
+    const F = s.filaments;
+    const chips = F.map((f, i) => h("button", { type: "button", class: `ord-chip${i === picked ? " picked" : ""}`,
+      "aria-label": `slot ${f.slot}, ${f.hex}`, style: `--fil:${f.hex}`, onclick: () => {
+        if (picked < 0) { picked = i; const o = orderRow(); orderEl.replaceWith(o); orderEl = o; return; }
+        if (picked !== i) { swapFil(picked, i); reordered(`swapped slots ${F[picked]?.slot ?? ""} and ${f.slot}`.replace("slots  and", "slots")); }
+        else { picked = -1; const o = orderRow(); orderEl.replaceWith(o); orderEl = o; }
+      } }, h("b", {}, amsName(f.slot))));
+    return h("div", { class: "ord" },
+      h("div", { class: "ord-strip" }, h("span", { class: "meta" }, "bottom"), chips, h("span", { class: "meta" }, "top")),
+      h("p", { class: "meta hint" }, picked < 0 ? "tap two colours to swap them" : `now tap where ${amsName(F[picked].slot)} should go`),
+      h("div", { class: "row" },
+        h("button", { class: "btn grow", type: "button", onclick: () => {
+          const n = F.length; for (let i = 0; i < n / 2; i++) swapFil(i, n - 1 - i);
+          reordered("order flipped: the top colour is now at the bottom");
+        } }, "⇅ flip order"),
+        h("button", { class: "btn grow", type: "button", onclick: () => {
+          const order = F.map((f, i) => i).sort((a, b) => lum(F[a].hex) - lum(F[b].hex));
+          const snap = F.map((f) => ({ hex: f.hex, name: f.name, td_mm: f.td_mm, band_layers: f.band_layers }));
+          order.forEach((from, to) => Object.assign(F[to], snap[from]));
+          reordered("darkest at the bottom, lightest on top");
+        } }, "dark → light")));
+  };
+  let orderEl = orderRow();
+
+  // ---- relief: how tall the colour stack is. Fewer layers per colour = a
+  // flatter print with gentler steps between tones (the base keeps the total).
+  const reliefNow = () => s.filaments.reduce((n, f) => n + (f.band_layers | 0), 0);
+  let reliefRatios = null;
+  const reliefField = rangeField("relief (colour layers in all)", reliefNow(), { min: s.filaments.length, max: 80,
+    fmt: (v) => `${v} layers · ${(v * s.layer_height_mm).toFixed(2)} mm`,
+    oninput: (v) => {
+      if (!reliefRatios) {
+        const tot = Math.max(1, reliefNow());
+        reliefRatios = s.filaments.map((f) => (f.band_layers | 0) / tot);
+      }
+      // share v out in the same proportions, at least one layer each
+      const raw = reliefRatios.map((r) => Math.max(1, r * v));
+      const ints = raw.map(Math.floor);
+      let left = v - ints.reduce((a, b) => a + b, 0);
+      raw.map((r, i) => [r - ints[i], i]).sort((a, b) => b[0] - a[0]).forEach(([, i]) => { if (left > 0) { ints[i]++; left--; } });
+      s.filaments.forEach((f, i) => { f.band_layers = ints[i]; });
+      clearTimeout(reliefTimer);
+      reliefTimer = setTimeout(() => { reliefRatios = null; const fresh = filTable(); filEl.replaceWith(fresh); filEl = fresh; }, 600);
+      refit(); queue();
+    } });
+  let reliefTimer = 0;
 
   s.thickness = s.thickness || { total_mm: null, min_mm: null };
   /** A thickness target: a number, or empty for off. */
@@ -2060,6 +2126,11 @@ function renderSolve(screen, action) {
       head("filaments"),
       h("p", { class: "meta hint" }, "slot 1 prints lowest · tap a spool to choose its colour"),
       filEl,
+      head("stack order"),
+      orderEl,
+      head("relief"),
+      reliefField,
+      h("p", { class: "meta hint" }, "lower = flatter, with gentler steps between colours. the thickness setting keeps the print solid underneath."),
       h("button", { class: "btn wide gap-top", onclick: () => {
         fitColours(); refitTable(); queue();
       } }, "fit colours to photo"),

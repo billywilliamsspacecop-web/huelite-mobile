@@ -236,6 +236,12 @@ artwork; colours come in through CSS variables).
 - **Thickness** (Solve › thickness): new projects are 10 mm tall in total, and no spot is thinner than 4.5 mm.
   The base (slot 1, under everything) grows to reach both, so the front colours don't change. A Brick slices at
   about 41 g and 4 h 10 min. Clear either box to turn it off. Older projects keep their base.
+- **Stack order** (Solve › stack order): tap two colours to swap them (each takes its TD and layers to its new
+  slot), "flip order" turns the stack upside down, and "dark → light" sorts it. Fit-colours stops re-sorting once
+  you've reordered.
+- **Relief** (Solve › relief): the colour stack's total layers, shared out in the current proportions. New
+  projects use 6 layers per colour (1.92 mm, 19 tones), half the old 12. Dark against light still gives a hard
+  edge without a deep step. The thickness setting adds the difference to the base.
 - **Front branding** (Back › front branding, on for new projects): "PRINT-BRICK" and the three-bar logo,
   raised 0.4 mm on the rim's bottom edge in the most contrasting filament ("Front branding" part in Studio).
   It needs a raised rim at least 5 mm wide, and gives way to the art border.

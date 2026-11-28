@@ -41,10 +41,10 @@ export function allFolders(paths) {
 }
 
 export const DEFAULT_FILAMENTS = [
-  { slot: 1, name: "Black", hex: "#101010", td_mm: 0.4, band_layers: 12 },
-  { slot: 2, name: "Blue", hex: "#0B39B5", td_mm: 0.8, band_layers: 12 },
-  { slot: 3, name: "Green", hex: "#2C7A2E", td_mm: 0.9, band_layers: 12 },
-  { slot: 4, name: "White", hex: "#F2F4F0", td_mm: 1.6, band_layers: 12 },
+  { slot: 1, name: "Black", hex: "#101010", td_mm: 0.4, band_layers: 6 },
+  { slot: 2, name: "Blue", hex: "#0B39B5", td_mm: 0.8, band_layers: 6 },
+  { slot: 3, name: "Green", hex: "#2C7A2E", td_mm: 0.9, band_layers: 6 },
+  { slot: 4, name: "White", hex: "#F2F4F0", td_mm: 1.6, band_layers: 6 },
 ];
 
 const now = () => new Date().toISOString().slice(0, 19);

@@ -961,3 +961,11 @@ html[data-stage="prep"] .chip.on, html[data-stage="back"] .chip.on, html[data-st
 @media (prefers-reduced-motion: reduce) {
   .cb-print i, .cb-print .cb-nozzle, .cb-title, .cb-line, .cb-new, .cb-go, .update-card .uc-spool .spool.mini { animation: none; }
 }
+
+/* stack order strip on Solve */
+.ord-strip { display: flex; align-items: center; gap: 8px; }
+.ord-strip .meta { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.ord-chip { flex: 1; height: 46px; border-radius: var(--r, 8px); border: 2px solid rgba(255, 255, 255, .18); background: var(--fil);
+  display: grid; place-items: center; transition: transform .15s, box-shadow .15s; }
+.ord-chip b { font: 800 12px var(--mono); padding: 2px 6px; border-radius: 6px; background: rgba(0, 0, 0, .55); color: #fff; }
+.ord-chip.picked { transform: translateY(-4px); border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent); }
